@@ -2,7 +2,7 @@
 
 Kubernetes RBAC attack path mapper. It finds what your identity can do, flags dangerous configurations, and chains permissions into multi-step paths to cluster compromise.
 
-Built for red teamers and penetration testers. Not a compliance tool.
+Built for red teamers and penetration testers.
 
 ## What It Does
 
@@ -175,6 +175,7 @@ For full details on each feature, see the docs folder:
 - **[Attack Chains](docs/chains.md)** - All 12 chain types with step-by-step exploitation details
 - **[CRD Awareness](docs/crds.md)** - All 31 CRD patterns across 10 operator categories
 - **[Pod Context Detection](docs/pod-context.md)** - How pod context analysis works and what it detects
+- **[Architecture](docs/architecture.md)** - Source layout and module responsibilities
 
 ## Requirements
 
@@ -197,29 +198,9 @@ For full details on each feature, see the docs folder:
 
 If a scan module lacks permissions, it reports that and continues. No module failure stops the scan.
 
-## Architecture
+## Disclaimer
 
-```
-src/
-  main.rs           - Entry point, client construction, auth modes
-  cli.rs            - CLI argument parsing (clap derive)
-  scanner/
-    mod.rs          - Scan orchestration, ScanData types
-    rbac.rs         - Identity detection, namespace permission enumeration
-    rbac_graph.rs   - Full RBAC graph (roles, bindings, identities)
-    namespace.rs    - Namespace enumeration with PSS label parsing
-    pods.rs         - Pod enumeration with security context extraction
-    secrets.rs      - Secret enumeration (types and metadata only)
-    crds.rs         - CRD enumeration and threat classification
-    pod_context.rs  - In-pod detection (SA token, mounts, env vars)
-  analyzer/
-    mod.rs          - Analysis orchestration, pod/CRD/identity/secret analysis
-    patterns.rs     - 55 dangerous permission definitions
-    chains.rs       - 12 chain builder types, chain deduplication
-  output/
-    terminal.rs     - Colored terminal output (PEASS-style)
-    json.rs         - JSON serialization and file output
-```
+kube-reaper is intended for authorized security testing, penetration testing engagements, and defensive security assessments only. You are responsible for obtaining proper authorization before scanning any cluster. Unauthorized access to computer systems is illegal. The authors accept no liability for misuse of this tool.
 
 ## License
 
