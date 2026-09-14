@@ -1,0 +1,240 @@
+pub mod crds;
+pub mod namespace;
+pub mod pod_context;
+pub mod pods;
+pub mod rbac;
+pub mod rbac_graph;
+pub mod secrets;
+
+use anyhow::Result;
+use kube::Client;
+use serde::Serialize;
+
+use crate::analyzer::chains::ClusterInfo;
+
+#[derive(Debug, Default)]
+pub struct ScanData {
+    pub identity: String,
+    pub cluster_info: ClusterInfo,
+    pub namespaces: Vec<NamespaceInfo>,
+    pub namespace_permissions: Vec<NamespacePermissions>,
+    pub pods: Vec<PodInfo>,
+    pub secrets_accessible: Vec<SecretRef>,
+    pub rbac_graph: Option<rbac_graph::RbacGraph>,
+    pub crds: Vec<crds::CrdInfo>,
+    pub pod_context: pod_context::PodContext,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NamespaceInfo {
+    pub name: String,
+    pub pss_enforce: Option<String>,
+    pub pss_audit: Option<String>,
+    pub pss_warn: Option<String>,
+    pub labels: std::collections::HashMap<String, String>,
+    pub service_accounts: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NamespacePermissions {
+    pub namespace: String,
+    pub rules: Vec<PermissionRule>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PermissionRule {
+    pub resource: String,
+    pub api_group: String,
+    pub verbs: Vec<String>,
+    pub resource_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PodInfo {
+    pub name: String,
+    pub namespace: String,
+    pub service_account: String,
+    pub node_name: Option<String>,
+    pub privileged: bool,
+    pub host_pid: bool,
+    pub host_network: bool,
+    pub host_path_mounts: Vec<String>,
+    pub env_vars: Vec<EnvVar>,
+    pub image: String,
+    pub automount_sa_token: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EnvVar {
+    pub name: String,
+    pub value: Option<String>,
+    pub from_secret: Option<String>,
+    pub from_configmap: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SecretRef {
+    pub name: String,
+    pub namespace: String,
+    pub secret_type: String,
+}
+
+pub async fn run_scan(client: &Client, target_namespace: Option<&str>) -> Result<ScanData> {
+    let mut data = ScanData::default();
+
+    let default_ns = client
+        .default_namespace()
+        .to_string();
+
+    // Pod context detection (runs even without API access)
+    data.pod_context = pod_context::detect_pod_context();
+    if data.pod_context.running_in_pod {
+        eprintln!("[*] Running inside a pod. Analyzing pod context...");
+        if let Some(ref sa) = data.pod_context.sa_name {
+            eprintln!("[+] Service Account: {}", sa);
+        }
+        if data.pod_context.sa_token_mounted {
+            eprintln!("[+] SA token is mounted");
+        }
+        if !data.pod_context.interesting_mounts.is_empty() {
+            eprintln!(
+                "[!] {} interesting mounts detected",
+                data.pod_context.interesting_mounts.len()
+            );
+        }
+        if !data.pod_context.interesting_env_vars.is_empty() {
+            eprintln!(
+                "[!] {} sensitive env vars detected",
+                data.pod_context.interesting_env_vars.len()
+            );
+        }
+    }
+
+    eprintln!("[*] Identifying current identity...");
+    data.identity = rbac::get_current_identity(client).await?;
+    eprintln!("[+] Identity: {}", data.identity);
+
+    eprintln!("[*] Enumerating namespaces...");
+    match namespace::enumerate_namespaces(client).await {
+        Ok(ns_list) => {
+            data.namespaces = ns_list;
+            eprintln!("[+] Found {} namespaces", data.namespaces.len());
+        }
+        Err(_) => {
+            let fallback = target_namespace.unwrap_or(&default_ns);
+            eprintln!("[!] Cannot list namespaces cluster-wide (RBAC denied). Falling back to: {}", fallback);
+            data.namespaces.push(NamespaceInfo {
+                name: fallback.to_string(),
+                pss_enforce: None,
+                pss_audit: None,
+                pss_warn: None,
+                labels: std::collections::HashMap::new(),
+                service_accounts: Vec::new(),
+            });
+        }
+    }
+
+    let target_namespaces: Vec<&str> = match target_namespace {
+        Some(ns) => vec![ns],
+        None => data.namespaces.iter().map(|n| n.name.as_str()).collect(),
+    };
+
+    eprintln!("[*] Enumerating RBAC permissions across {} namespaces...", target_namespaces.len());
+    for ns in &target_namespaces {
+        match rbac::get_permissions_in_namespace(client, ns).await {
+            Ok(perms) => {
+                if !perms.rules.is_empty() {
+                    data.namespace_permissions.push(perms);
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    eprintln!(
+        "[+] Enumerated permissions in {} namespaces",
+        data.namespace_permissions.len()
+    );
+
+    eprintln!("[*] Enumerating pods...");
+    for ns in &target_namespaces {
+        match pods::enumerate_pods(client, ns).await {
+            Ok(mut pod_list) => data.pods.append(&mut pod_list),
+            Err(_) => {}
+        }
+    }
+    eprintln!("[+] Found {} pods", data.pods.len());
+
+    eprintln!("[*] Checking secret accessibility...");
+    for ns in &target_namespaces {
+        match secrets::enumerate_secrets(client, ns).await {
+            Ok(mut secret_list) => data.secrets_accessible.append(&mut secret_list),
+            Err(_) => {}
+        }
+    }
+    eprintln!(
+        "[+] {} secrets accessible",
+        data.secrets_accessible.len()
+    );
+
+    // RBAC graph enumeration (requires list roles/bindings)
+    eprintln!("[*] Enumerating RBAC graph (roles, bindings, identities)...");
+    match rbac_graph::enumerate_rbac_graph(client).await {
+        Ok(graph) => {
+            let profiles = graph.build_identity_profiles();
+            let sa_count = profiles.iter().filter(|p| p.kind == "ServiceAccount").count();
+            let user_count = profiles.iter().filter(|p| p.kind == "User").count();
+            let group_count = profiles.iter().filter(|p| p.kind == "Group").count();
+            eprintln!(
+                "[+] RBAC graph: {} roles, {} bindings, {} identities ({} SAs, {} users, {} groups)",
+                graph.roles.len(),
+                graph.bindings.len(),
+                profiles.len(),
+                sa_count,
+                user_count,
+                group_count
+            );
+            data.rbac_graph = Some(graph);
+        }
+        Err(_) => {
+            eprintln!("[!] Cannot enumerate RBAC graph (RBAC denied). Skipping identity analysis.");
+        }
+    }
+
+    // CRD enumeration
+    eprintln!("[*] Enumerating Custom Resource Definitions...");
+    match crds::enumerate_crds(client).await {
+        Ok(crd_list) => {
+            let dangerous_count = crd_list
+                .iter()
+                .filter(|c| c.category != crds::CrdCategory::Other)
+                .count();
+            eprintln!(
+                "[+] Found {} CRDs ({} with known attack surface)",
+                crd_list.len(),
+                dangerous_count
+            );
+            data.crds = crd_list;
+        }
+        Err(_) => {
+            eprintln!("[!] Cannot enumerate CRDs (RBAC denied). Skipping CRD analysis.");
+        }
+    }
+
+    // Enumerate service accounts per namespace
+    for ns_info in &mut data.namespaces {
+        match rbac::get_service_accounts(client, &ns_info.name).await {
+            Ok(sas) => ns_info.service_accounts = sas,
+            Err(_) => {}
+        }
+    }
+
+    // Build cluster info
+    data.cluster_info = ClusterInfo {
+        server: "".to_string(),
+        version: "".to_string(),
+        current_namespace: target_namespace.unwrap_or(&default_ns).to_string(),
+        namespaces: data.namespaces.iter().map(|n| n.name.clone()).collect(),
+    };
+
+    Ok(data)
+}
