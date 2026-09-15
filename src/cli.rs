@@ -51,6 +51,14 @@ pub struct Cli {
     /// Show only attack chains (skip individual findings)
     #[arg(long)]
     pub chains_only: bool,
+
+    /// Recursive identity pivot: read SA token secrets and mint tokens to discover transitive access
+    #[arg(long)]
+    pub pivot: bool,
+
+    /// Maximum pivot depth (default: 3)
+    #[arg(long, default_value = "3")]
+    pub pivot_depth: u32,
 }
 
 #[derive(Debug, Clone, ValueEnum)]

@@ -15,6 +15,7 @@ pub fn analyze(data: &ScanData) -> Result<ScanResults> {
     let mut results = ScanResults {
         identity: data.identity.clone(),
         cluster_info: data.cluster_info.clone(),
+        pivot_graph: data.pivot_graph.clone(),
         ..Default::default()
     };
 
@@ -41,6 +42,9 @@ pub fn analyze(data: &ScanData) -> Result<ScanResults> {
             }
             for verb in &rule.verbs {
                 for perm in &dangerous {
+                    if !rule.resource_names.is_empty() && perm.resource != "*" {
+                        continue;
+                    }
                     if permission_matches(perm, &rule.resource, verb, &rule.api_group) {
                         if perm.id == "create-pods-no-pss" && ns_has_pss {
                             continue;
@@ -355,6 +359,9 @@ fn analyze_identities(data: &ScanData) -> Vec<IdentityProfile> {
             }
             for verb in &rule.verbs {
                 for perm in &dangerous {
+                    if !rule.resource_names.is_empty() && perm.resource != "*" {
+                        continue;
+                    }
                     if permission_matches(perm, &rule.resource, verb, &rule.api_group) {
                         let perm_str = perm.title.to_string();
                         if !dangerous_perms.contains(&perm_str) {
@@ -768,9 +775,15 @@ fn analyze_cronjobs(data: &ScanData) -> Vec<CronJobFinding> {
                     && p.effective_rules.iter().any(|r| {
                         !is_default_grant(&r.resource)
                             && r.verbs.iter().any(|v| {
-                                dangerous
-                                    .iter()
-                                    .any(|d| permission_matches(d, &r.resource, v, &r.api_group))
+                                dangerous.iter().any(|d| {
+                                    (r.resource_names.is_empty() || d.resource == "*")
+                                        && permission_matches(
+                                            d,
+                                            &r.resource,
+                                            v,
+                                            &r.api_group,
+                                        )
+                                })
                             })
                     })
             })
@@ -844,7 +857,11 @@ fn permission_matches(
         perm.resource == resource || resource == "*"
     };
 
-    let verb_match = perm.verbs.contains(&"*") || perm.verbs.contains(&verb);
+    let verb_match = if perm.verbs.contains(&"*") {
+        verb == "*"
+    } else {
+        perm.verbs.contains(&verb)
+    };
     let group_match = perm.api_group == "*" || perm.api_group == api_group || api_group == "*";
     resource_match && verb_match && group_match
 }

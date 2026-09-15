@@ -26,8 +26,37 @@ async fn main() -> Result<()> {
 
     // Try to build kube client. If it fails and we're in a pod, degrade to local-only mode.
     let scan_data = match build_client(&args).await {
-        Ok(client) => {
-            scanner::run_scan(&client, args.namespace.as_deref(), pod_context).await?
+        Ok((client, server_url)) => {
+            let mut data =
+                scanner::run_scan(&client, args.namespace.as_deref(), pod_context).await?;
+
+            if args.pivot {
+                eprintln!("[*] Starting recursive identity pivot (max depth {})...", args.pivot_depth);
+                let ns_names: Vec<String> = data
+                    .namespaces
+                    .iter()
+                    .map(|n| n.name.clone())
+                    .collect();
+                match scanner::pivot::run_pivot(
+                    &server_url,
+                    &client,
+                    &data.namespace_permissions,
+                    &ns_names,
+                    &data.identity,
+                    args.pivot_depth,
+                )
+                .await
+                {
+                    Ok(graph) => {
+                        data.pivot_graph = Some(graph);
+                    }
+                    Err(e) => {
+                        eprintln!("[!] Pivot scan failed: {}", e);
+                    }
+                }
+            }
+
+            data
         }
         Err(e) => {
             if in_pod {
@@ -77,7 +106,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn build_client(args: &Cli) -> Result<Client> {
+async fn build_client(args: &Cli) -> Result<(Client, String)> {
     if let Some(token) = &args.token {
         let server = match &args.server {
             Some(s) => s.clone(),
@@ -95,7 +124,8 @@ async fn build_client(args: &Cli) -> Result<Client> {
             config.auth_info.impersonate_groups = Some(vec![group.clone()]);
         }
 
-        return Client::try_from(config).map_err(Into::into);
+        let url = config.cluster_url.to_string();
+        return Ok((Client::try_from(config)?, url));
     }
 
     let config = match &args.kubeconfig {
@@ -123,5 +153,6 @@ async fn build_client(args: &Cli) -> Result<Client> {
         }
     };
 
-    Client::try_from(config).map_err(Into::into)
+    let url = config.cluster_url.to_string();
+    Ok((Client::try_from(config)?, url))
 }

@@ -2,6 +2,7 @@ pub mod configmaps;
 pub mod crds;
 pub mod cronjobs;
 pub mod namespace;
+pub mod pivot;
 pub mod pod_context;
 pub mod pods;
 pub mod rbac;
@@ -29,6 +30,7 @@ pub struct ScanData {
     pub services: Vec<services::ServiceInfo>,
     pub configmaps: Vec<configmaps::ConfigMapRef>,
     pub cronjobs: Vec<cronjobs::CronJobInfo>,
+    pub pivot_graph: Option<pivot::PivotGraph>,
 }
 
 #[derive(Debug, Clone, Serialize)]

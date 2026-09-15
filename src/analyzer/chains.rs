@@ -154,6 +154,7 @@ pub struct ScanResults {
     pub service_findings: Vec<ServiceFinding>,
     pub configmap_findings: Vec<ConfigMapFinding>,
     pub cronjob_findings: Vec<CronJobFinding>,
+    pub pivot_graph: Option<crate::scanner::pivot::PivotGraph>,
     pub identity: String,
     pub cluster_info: ClusterInfo,
 }

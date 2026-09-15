@@ -5,6 +5,7 @@ use crate::analyzer::chains::{
     NamespaceFinding, PodContextFinding, PodFinding, ScanResults, SecretFinding, ServiceFinding,
 };
 use crate::analyzer::patterns::Severity;
+use crate::scanner::pivot::{PivotGraph, PivotMethod};
 
 pub fn print_banner() {
     let banner = r#"
@@ -62,6 +63,17 @@ pub fn print_results(results: &ScanResults) {
             results.identity_profiles.len().to_string().yellow()
         );
     }
+    if let Some(ref pivot) = results.pivot_graph {
+        if pivot.nodes.len() > 1 {
+            println!(
+                "  {} {} ({} edges, depth {})",
+                "Pivot Identities:".bright_white().bold(),
+                pivot.nodes.len().to_string().bright_red(),
+                pivot.edges.len().to_string().bright_red(),
+                pivot.max_depth_reached.to_string().bright_red()
+            );
+        }
+    }
     if !results.secret_findings.is_empty() {
         println!(
             "  {} {}",
@@ -99,6 +111,12 @@ pub fn print_results(results: &ScanResults) {
 
     if !results.chains.is_empty() {
         print_attack_chains(&results.chains);
+    }
+
+    if let Some(ref pivot) = results.pivot_graph {
+        if pivot.nodes.len() > 1 {
+            print_pivot_graph(pivot);
+        }
     }
 
     if !results.pod_findings.is_empty() {
@@ -737,6 +755,129 @@ fn print_findings(findings: &[Finding]) {
     }
 }
 
+fn print_pivot_graph(graph: &PivotGraph) {
+    println!(
+        "\n{}\n",
+        "╔══════════════════════════════════════════════════╗"
+            .bright_red()
+            .bold()
+    );
+    println!(
+        "{}",
+        "║           IDENTITY PIVOT GRAPH                    ║"
+            .bright_red()
+            .bold()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════╝"
+            .bright_red()
+            .bold()
+    );
+
+    println!(
+        "\n  {} {} ({} identities, {} edges, max depth {})",
+        "Root:".bright_white().bold(),
+        graph.root_identity.cyan(),
+        graph.nodes.len().to_string().bright_red(),
+        graph.edges.len().to_string().bright_red(),
+        graph.max_depth_reached.to_string().yellow()
+    );
+
+    for node in &graph.nodes {
+        if node.depth == 0 {
+            continue;
+        }
+
+        let edge = graph
+            .edges
+            .iter()
+            .find(|e| e.to_identity == node.identity);
+
+        let method_str = match edge {
+            Some(e) => match e.method {
+                PivotMethod::SecretToken => {
+                    format!("SecretToken {}/{}", e.namespace, e.via)
+                }
+                PivotMethod::TokenRequest => {
+                    format!("TokenRequest {}/{}", e.namespace, e.via)
+                }
+            },
+            None => "unknown".to_string(),
+        };
+
+        let from_str = edge
+            .map(|e| e.from_identity.as_str())
+            .unwrap_or("?");
+
+        let indent = "  ".repeat(node.depth as usize + 1);
+
+        println!(
+            "\n{}[{}] {} [{}]",
+            indent,
+            severity_colored(&node.severity),
+            node.identity.bright_white().bold(),
+            method_str.bright_yellow()
+        );
+        println!(
+            "{}  {} from: {}",
+            indent,
+            "via".bright_black(),
+            pivot_short(from_str).cyan()
+        );
+
+        if !node.dangerous_permissions.is_empty() {
+            let display: Vec<&str> = node
+                .dangerous_permissions
+                .iter()
+                .take(5)
+                .map(|s| s.as_str())
+                .collect();
+            let more = if node.dangerous_permissions.len() > 5 {
+                format!(" (+{} more)", node.dangerous_permissions.len() - 5)
+            } else {
+                String::new()
+            };
+            println!(
+                "{}  {} {}{}",
+                indent,
+                "perms:".bright_black(),
+                display.join(", ").bright_yellow(),
+                more.bright_black()
+            );
+        }
+
+        if !node.can_read_secrets_in.is_empty() || !node.can_create_tokens_in.is_empty() {
+            let mut pivot_caps = Vec::new();
+            if !node.can_read_secrets_in.is_empty() {
+                pivot_caps.push(format!(
+                    "read secrets [{}]",
+                    node.can_read_secrets_in.join(", ")
+                ));
+            }
+            if !node.can_create_tokens_in.is_empty() {
+                pivot_caps.push(format!(
+                    "mint tokens [{}]",
+                    node.can_create_tokens_in.join(", ")
+                ));
+            }
+            println!(
+                "{}  {} {}",
+                indent,
+                "pivot:".bright_black(),
+                pivot_caps.join(" | ").bright_red()
+            );
+        }
+    }
+    println!();
+}
+
+fn pivot_short(identity: &str) -> &str {
+    identity
+        .strip_prefix("system:serviceaccount:")
+        .unwrap_or(identity)
+}
+
 fn print_summary(results: &ScanResults) {
     println!(
         "\n{}\n",
@@ -887,6 +1028,23 @@ fn print_summary(results: &ScanResults) {
             results.cronjob_findings.len().to_string().bright_blue(),
             elevated.to_string().bright_red().bold()
         );
+    }
+
+    if let Some(ref pivot) = results.pivot_graph {
+        if pivot.nodes.len() > 1 {
+            let critical_pivots = pivot
+                .nodes
+                .iter()
+                .filter(|n| n.depth > 0 && n.severity == Severity::Critical)
+                .count();
+            println!(
+                "  {} {} ({} with critical perms, depth {})",
+                "Pivot Identities:".bright_red().bold(),
+                (pivot.nodes.len() - 1).to_string().bright_red(),
+                critical_pivots.to_string().bright_red().bold(),
+                pivot.max_depth_reached.to_string().yellow()
+            );
+        }
     }
 
     println!();
