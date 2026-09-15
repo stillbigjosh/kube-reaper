@@ -146,27 +146,6 @@ The terminal output has these sections (each appears only when it has findings):
 | Dangerous Permissions | Individual permission findings grouped by severity |
 | Summary | Counts of all finding categories |
 
-### JSON output
-
-Use `-o json` for machine-readable output or `-w results.json` to save to a file.
-
-```bash
-# List all critical attack chains
-kube-reaper -o json | jq '.chains[] | select(.severity == "Critical") | .title'
-
-# Find namespaces without PSS enforcement where you can create pods
-kube-reaper -o json | jq '.namespace_findings[] | select(.privileged_pod_path == true) | .namespace'
-
-# List SA token secrets (instant identity pivot)
-kube-reaper -o json | jq '.secret_findings[] | select(.category == "SA Token") | {name, namespace}'
-
-# Find pod pivot chains
-kube-reaper -o json | jq '.chains[] | select(.id | startswith("pod-pivot")) | .title'
-
-# Get unconventional findings only
-kube-reaper -o json | jq '.findings[] | select(.unconventional == true) | {title, namespace, attack_path}'
-```
-
 ## Detailed Documentation
 
 For full details on each feature, see the docs folder:
