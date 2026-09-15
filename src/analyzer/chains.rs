@@ -243,6 +243,8 @@ impl ChainBuilder {
         chains.extend(self.find_pv_breakout_chains());
         chains.extend(self.find_csr_chains());
         chains.extend(self.find_pod_pivot_chains());
+        chains.extend(self.find_exec_dangerous_pod_chains());
+        chains.extend(self.find_sa_spec_pivot_chains());
 
         // Deduplicate chains by id (same identity + namespace + chain type)
         let mut seen = std::collections::HashSet::new();
@@ -948,6 +950,254 @@ impl ChainBuilder {
                         sa_identity,
                         perms_display,
                         more
+                    ),
+                });
+            }
+        }
+
+        chains
+    }
+
+    fn find_exec_dangerous_pod_chains(&self) -> Vec<AttackChain> {
+        let mut chains = Vec::new();
+
+        for identity in &self.identities {
+            let can_exec = identity.rules.iter().any(|r| {
+                (r.resource == "pods/exec" || r.resource == "*")
+                    && (r.verbs.contains(&"create".to_string())
+                        || r.verbs.contains(&"*".to_string()))
+            });
+            let can_attach = identity.rules.iter().any(|r| {
+                (r.resource == "pods/attach" || r.resource == "*")
+                    && (r.verbs.contains(&"create".to_string())
+                        || r.verbs.contains(&"*".to_string()))
+            });
+
+            if !can_exec && !can_attach {
+                continue;
+            }
+
+            let access_method = if can_exec { "exec" } else { "attach" };
+
+            for pod in &self.pods {
+                if pod.namespace != identity.namespace {
+                    continue;
+                }
+
+                let is_privileged = pod.privileged;
+                let has_host_pid = pod.host_pid;
+                let has_root_mount = pod.host_path_mounts.iter().any(|m| m == "/");
+                let has_sensitive_mount = pod.host_path_mounts.iter().any(|m| {
+                    m == "/" || m == "/etc" || m == "/var" || m.contains("docker.sock")
+                        || m.contains("containerd.sock")
+                });
+
+                if !is_privileged && !has_host_pid && !has_sensitive_mount {
+                    continue;
+                }
+
+                let mut steps = Vec::new();
+                let mut pod_flags = Vec::new();
+
+                if is_privileged {
+                    pod_flags.push("privileged");
+                }
+                if has_host_pid {
+                    pod_flags.push("hostPID");
+                }
+                if has_root_mount {
+                    pod_flags.push("hostPath:/");
+                } else if has_sensitive_mount {
+                    pod_flags.push("hostPath(sensitive)");
+                }
+
+                let flags_str = pod_flags.join(", ");
+
+                steps.push(AttackStep {
+                    identity: identity.identity.clone(),
+                    namespace: pod.namespace.clone(),
+                    action: format!(
+                        "kubectl {} -n {} {} (already running with {})",
+                        access_method, pod.namespace, pod.pod_name, flags_str
+                    ),
+                    result: "Shell inside dangerous container".into(),
+                    capability_gained: AttackCapability::CodeExecution,
+                });
+
+                if is_privileged && has_root_mount {
+                    steps.push(AttackStep {
+                        identity: identity.identity.clone(),
+                        namespace: pod.namespace.clone(),
+                        action: "chroot /mnt (host root already mounted)".into(),
+                        result: format!(
+                            "Root shell on {}",
+                            pod.node.as_deref().unwrap_or("worker node")
+                        ),
+                        capability_gained: AttackCapability::NodeBreakout,
+                    });
+                } else if is_privileged {
+                    steps.push(AttackStep {
+                        identity: identity.identity.clone(),
+                        namespace: pod.namespace.clone(),
+                        action: "nsenter --target 1 --mount --uts --ipc --net --pid".into(),
+                        result: format!(
+                            "Root shell on {}",
+                            pod.node.as_deref().unwrap_or("worker node")
+                        ),
+                        capability_gained: AttackCapability::NodeBreakout,
+                    });
+                } else if has_sensitive_mount {
+                    steps.push(AttackStep {
+                        identity: identity.identity.clone(),
+                        namespace: pod.namespace.clone(),
+                        action: "Read credentials from host filesystem mount".into(),
+                        result: "Host filesystem access, credential theft".into(),
+                        capability_gained: AttackCapability::CredentialHarvest,
+                    });
+                }
+
+                let final_cap = if is_privileged {
+                    AttackCapability::NodeBreakout
+                } else {
+                    AttackCapability::CredentialHarvest
+                };
+
+                chains.push(AttackChain {
+                    id: format!(
+                        "exec-dangerous-{}-{}-{}",
+                        identity.identity, pod.namespace, pod.pod_name
+                    ),
+                    title: format!(
+                        "Exec into Dangerous Pod {}/{} [{}]",
+                        pod.namespace, pod.pod_name, flags_str
+                    ),
+                    severity: Severity::Critical,
+                    steps,
+                    final_capability: final_cap,
+                    description: format!(
+                        "{} can {} into {}/{} which is already running with {}. No new pod creation needed.",
+                        identity.identity, access_method, pod.namespace, pod.pod_name, flags_str
+                    ),
+                });
+            }
+        }
+
+        chains
+    }
+
+    fn find_sa_spec_pivot_chains(&self) -> Vec<AttackChain> {
+        let mut chains = Vec::new();
+
+        for identity in &self.identities {
+            let can_create_pods = identity.rules.iter().any(|r| {
+                (r.resource == "pods" || r.resource == "*")
+                    && (r.verbs.contains(&"create".to_string())
+                        || r.verbs.contains(&"*".to_string()))
+            });
+
+            if !can_create_pods {
+                continue;
+            }
+
+            let ns_sec = match self.namespace_security.iter().find(|ns| ns.name == identity.namespace) {
+                Some(ns) => ns,
+                None => continue,
+            };
+
+            for sa_name in &ns_sec.service_accounts {
+                let sa_identity = format!(
+                    "system:serviceaccount:{}:{}",
+                    identity.namespace, sa_name
+                );
+
+                if sa_identity == identity.identity {
+                    continue;
+                }
+
+                let sa_profile = match self.sa_profiles.iter().find(|p| p.identity == sa_identity) {
+                    Some(p) => p,
+                    None => continue,
+                };
+
+                if sa_profile.dangerous_permissions.is_empty() {
+                    continue;
+                }
+
+                let top_perms: Vec<&str> = sa_profile
+                    .dangerous_permissions
+                    .iter()
+                    .take(3)
+                    .map(|s| s.as_str())
+                    .collect();
+                let perms_display = top_perms.join(", ");
+                let more = if sa_profile.dangerous_permissions.len() > 3 {
+                    format!(" (+{} more)", sa_profile.dangerous_permissions.len() - 3)
+                } else {
+                    String::new()
+                };
+
+                let (final_cap, severity) = if sa_profile.has_wildcard {
+                    (AttackCapability::ClusterAdmin, Severity::Critical)
+                } else if sa_profile.severity == Severity::Critical {
+                    (AttackCapability::PrivilegeEscalation, Severity::Critical)
+                } else {
+                    (AttackCapability::LateralMovement, Severity::High)
+                };
+
+                let no_pss = ns_sec.pss_enforce.is_none();
+                let pss_note = if no_pss {
+                    " (no PSS, privileged pod possible)"
+                } else {
+                    ""
+                };
+
+                chains.push(AttackChain {
+                    id: format!(
+                        "sa-spec-pivot-{}-{}-{}",
+                        identity.identity, identity.namespace, sa_name
+                    ),
+                    title: format!(
+                        "Identity Pivot via Pod SA Spec: {} -> {}",
+                        identity.identity, sa_name
+                    ),
+                    severity,
+                    steps: vec![
+                        AttackStep {
+                            identity: identity.identity.clone(),
+                            namespace: identity.namespace.clone(),
+                            action: format!(
+                                "Create pod with serviceAccountName: {}{}",
+                                sa_name, pss_note
+                            ),
+                            result: format!(
+                                "Pod runs as {}, projected token auto-mounted",
+                                sa_identity
+                            ),
+                            capability_gained: AttackCapability::CodeExecution,
+                        },
+                        AttackStep {
+                            identity: identity.identity.clone(),
+                            namespace: identity.namespace.clone(),
+                            action: "Read /var/run/secrets/kubernetes.io/serviceaccount/token from pod".into(),
+                            result: format!("Token for {} acquired", sa_identity),
+                            capability_gained: AttackCapability::CredentialHarvest,
+                        },
+                        AttackStep {
+                            identity: sa_identity.clone(),
+                            namespace: identity.namespace.clone(),
+                            action: format!("Authenticate as {}. SA has: {}{}", sa_identity, perms_display, more),
+                            result: if sa_profile.has_wildcard {
+                                "Wildcard access, cluster-admin equivalent".into()
+                            } else {
+                                format!("Escalated permissions via {}", sa_name)
+                            },
+                            capability_gained: final_cap,
+                        },
+                    ],
+                    final_capability: final_cap,
+                    description: format!(
+                        "{} can create pods in {} and specify serviceAccountName. Create a pod as {} to harvest its projected token. No secret read access needed. {} has: {}{}.",
+                        identity.identity, identity.namespace, sa_name, sa_identity, perms_display, more
                     ),
                 });
             }

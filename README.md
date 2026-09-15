@@ -195,6 +195,3 @@ If a scan module lacks permissions, it reports that and continues. No module fai
 
 kube-reaper is for authorized security testing, penetration testing engagements, and defensive security assessments only. You must get proper authorization before you scan any cluster. Unauthorized access to computer systems is illegal. The authors accept no liability for misuse of this tool.
 
-## License
-
-MIT
