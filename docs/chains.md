@@ -1,6 +1,6 @@
 # Attack Path Chains
 
-kube-reaper builds 12 types of multi-step attack chains. Each chain links permissions, running pods, and cluster state into a step-by-step escalation path.
+kube-reaper builds 16 types of multi-step attack chains. Each chain links permissions, running pods, and cluster state into a step-by-step escalation path.
 
 Chains are deduplicated by ID. The same chain type for the same identity is shown once, not once per namespace (except where namespace matters, such as privileged pod breakout and PSS removal).
 
@@ -184,6 +184,34 @@ This chain cross-references three data sources:
 - Each SA's effective RBAC permissions from the RBAC graph
 
 The chain shows what pod to target, what SA it runs as, and what permissions that SA has. Pod pivot chains include flags for additional risk factors: `[privileged]`, `[hostPID]`, `[hostPath]`.
+
+### 15. Exec into Dangerous Pod
+
+**Severity:** CRITICAL
+**Requires:** `create pods/exec` or `create pods/attach` + running pods with privileged, hostPID, or sensitive hostPath mounts
+**Final capability:** Node Breakout or Credential Harvest
+
+Steps:
+1. Exec or attach into an already-running dangerous pod
+2. If privileged with hostPath:/: `chroot /mnt` for root shell on the node
+3. If privileged without root mount: `nsenter --target 1 --mount --uts --ipc --net --pid` or read `/proc/1/root`
+4. If hostPath only: read credentials from mounted host filesystem
+
+This is the shortest path to node access when a dangerous pod already exists. Unlike chain type 1 (Privileged Pod Breakout), you do not need `create pods`. You reuse what is already running. This chain is reported alongside the longer create-your-own-pod path when both are available.
+
+### 16. SA Spec Identity Pivot
+
+**Severity:** HIGH or CRITICAL (depends on target SA)
+**Requires:** `create pods` in a namespace + target SA with dangerous permissions in the same namespace
+**Final capability:** Lateral Movement, Privilege Escalation, or Cluster Admin Takeover
+
+Steps:
+1. Create a pod with `serviceAccountName` set to the target SA
+2. The API server mounts a projected token for that SA automatically
+3. Read the token from `/var/run/secrets/kubernetes.io/serviceaccount/token`
+4. Authenticate as the target SA
+
+This chain does not require `get secrets` or `create serviceaccounts/token`. It only needs `create pods`. The projected token is mounted by the API server as part of normal pod creation. The chain cross-references pod creation permissions with the RBAC graph to find SAs worth targeting.
 
 ## Chain Deduplication
 

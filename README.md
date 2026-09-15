@@ -9,7 +9,7 @@ Built for red teamers and penetration testers.
 kube-reaper scans a Kubernetes cluster from any identity (user, service account, group) and produces:
 
 - **55 dangerous permission patterns** with severity ratings and attack instructions
-- **12 attack chain types** that link permissions into multi-step escalation paths
+- **16 attack chain types** that link permissions into multi-step escalation paths
 - **Recursive identity pivoting** that reads SA token secrets and mints tokens to map transitive access across identities
 - **Pod pivot mapping** that connects exec access, running pods, and service account permissions
 - **Dangerous pod detection** that flags privileged containers, host mounts, runtime sockets, and exposed secrets
@@ -167,7 +167,7 @@ The terminal output shows these sections (each appears only when it has findings
 ## Detailed Documentation
 
 - **[Dangerous Permissions](docs/permissions.md)** - All 55 permission patterns
-- **[Attack Chains](docs/chains.md)** - All 12 chain types with exploitation details
+- **[Attack Chains](docs/chains.md)** - All 16 chain types with exploitation details
 - **[CRD Awareness](docs/crds.md)** - All 31 CRD patterns across 10 operator categories
 - **[Pod Context Detection](docs/pod-context.md)** - Escape vectors, capabilities, IMDS, network, and kubectl-less mode
 - **[Architecture](docs/architecture.md)** - Source layout, module responsibilities, and data flow
