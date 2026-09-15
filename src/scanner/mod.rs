@@ -1,10 +1,13 @@
+pub mod configmaps;
 pub mod crds;
+pub mod cronjobs;
 pub mod namespace;
 pub mod pod_context;
 pub mod pods;
 pub mod rbac;
 pub mod rbac_graph;
 pub mod secrets;
+pub mod services;
 
 use anyhow::Result;
 use kube::Client;
@@ -23,6 +26,9 @@ pub struct ScanData {
     pub rbac_graph: Option<rbac_graph::RbacGraph>,
     pub crds: Vec<crds::CrdInfo>,
     pub pod_context: pod_context::PodContext,
+    pub services: Vec<services::ServiceInfo>,
+    pub configmaps: Vec<configmaps::ConfigMapRef>,
+    pub cronjobs: Vec<cronjobs::CronJobInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,15 +85,16 @@ pub struct SecretRef {
     pub secret_type: String,
 }
 
-pub async fn run_scan(client: &Client, target_namespace: Option<&str>) -> Result<ScanData> {
+pub async fn run_scan(
+    client: &Client,
+    target_namespace: Option<&str>,
+    pod_ctx: pod_context::PodContext,
+) -> Result<ScanData> {
     let mut data = ScanData::default();
 
-    let default_ns = client
-        .default_namespace()
-        .to_string();
+    let default_ns = client.default_namespace().to_string();
 
-    // Pod context detection (runs even without API access)
-    data.pod_context = pod_context::detect_pod_context();
+    data.pod_context = pod_ctx;
     if data.pod_context.running_in_pod {
         eprintln!("[*] Running inside a pod. Analyzing pod context...");
         if let Some(ref sa) = data.pod_context.sa_name {
@@ -108,6 +115,24 @@ pub async fn run_scan(client: &Client, target_namespace: Option<&str>) -> Result
                 data.pod_context.interesting_env_vars.len()
             );
         }
+        if !data.pod_context.capabilities.is_empty() {
+            eprintln!(
+                "[!] {} dangerous capabilities detected",
+                data.pod_context.capabilities.len()
+            );
+        }
+        if !data.pod_context.cloud_metadata.is_empty() {
+            eprintln!(
+                "[!] {} cloud metadata endpoints accessible",
+                data.pod_context.cloud_metadata.len()
+            );
+        }
+        if !data.pod_context.escape_vectors.is_empty() {
+            eprintln!(
+                "[!] {} container escape vectors detected",
+                data.pod_context.escape_vectors.len()
+            );
+        }
     }
 
     eprintln!("[*] Identifying current identity...");
@@ -122,7 +147,10 @@ pub async fn run_scan(client: &Client, target_namespace: Option<&str>) -> Result
         }
         Err(_) => {
             let fallback = target_namespace.unwrap_or(&default_ns);
-            eprintln!("[!] Cannot list namespaces cluster-wide (RBAC denied). Falling back to: {}", fallback);
+            eprintln!(
+                "[!] Cannot list namespaces cluster-wide (RBAC denied). Falling back to: {}",
+                fallback
+            );
             data.namespaces.push(NamespaceInfo {
                 name: fallback.to_string(),
                 pss_enforce: None,
@@ -139,7 +167,10 @@ pub async fn run_scan(client: &Client, target_namespace: Option<&str>) -> Result
         None => data.namespaces.iter().map(|n| n.name.as_str()).collect(),
     };
 
-    eprintln!("[*] Enumerating RBAC permissions across {} namespaces...", target_namespaces.len());
+    eprintln!(
+        "[*] Enumerating RBAC permissions across {} namespaces...",
+        target_namespaces.len()
+    );
     for ns in &target_namespaces {
         match rbac::get_permissions_in_namespace(client, ns).await {
             Ok(perms) => {
@@ -171,17 +202,44 @@ pub async fn run_scan(client: &Client, target_namespace: Option<&str>) -> Result
             Err(_) => {}
         }
     }
-    eprintln!(
-        "[+] {} secrets accessible",
-        data.secrets_accessible.len()
-    );
+    eprintln!("[+] {} secrets accessible", data.secrets_accessible.len());
 
-    // RBAC graph enumeration (requires list roles/bindings)
+    eprintln!("[*] Enumerating services...");
+    for ns in &target_namespaces {
+        match services::enumerate_services(client, ns).await {
+            Ok(mut svc_list) => data.services.append(&mut svc_list),
+            Err(_) => {}
+        }
+    }
+    eprintln!("[+] Found {} services", data.services.len());
+
+    eprintln!("[*] Enumerating configmaps...");
+    for ns in &target_namespaces {
+        match configmaps::enumerate_configmaps(client, ns).await {
+            Ok(mut cm_list) => data.configmaps.append(&mut cm_list),
+            Err(_) => {}
+        }
+    }
+    eprintln!("[+] Found {} configmaps", data.configmaps.len());
+
+    eprintln!("[*] Enumerating cronjobs...");
+    for ns in &target_namespaces {
+        match cronjobs::enumerate_cronjobs(client, ns).await {
+            Ok(mut cj_list) => data.cronjobs.append(&mut cj_list),
+            Err(_) => {}
+        }
+    }
+    eprintln!("[+] Found {} cronjobs", data.cronjobs.len());
+
+    // RBAC graph enumeration
     eprintln!("[*] Enumerating RBAC graph (roles, bindings, identities)...");
     match rbac_graph::enumerate_rbac_graph(client).await {
         Ok(graph) => {
             let profiles = graph.build_identity_profiles();
-            let sa_count = profiles.iter().filter(|p| p.kind == "ServiceAccount").count();
+            let sa_count = profiles
+                .iter()
+                .filter(|p| p.kind == "ServiceAccount")
+                .count();
             let user_count = profiles.iter().filter(|p| p.kind == "User").count();
             let group_count = profiles.iter().filter(|p| p.kind == "Group").count();
             eprintln!(

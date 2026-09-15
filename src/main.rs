@@ -13,9 +13,40 @@ use cli::{Cli, OutputFormat};
 async fn main() -> Result<()> {
     let args = Cli::parse();
 
-    let client = build_client(&args).await?;
+    // Pod context detection runs first (no API needed, pure filesystem)
+    let pod_context = scanner::pod_context::detect_pod_context();
+    let in_pod = pod_context.running_in_pod;
+    let pod_identity = pod_context.sa_name.as_ref().map(|n| {
+        format!(
+            "system:serviceaccount:{}:{}",
+            pod_context.sa_namespace.as_deref().unwrap_or("unknown"),
+            n
+        )
+    });
 
-    let scan_data = scanner::run_scan(&client, args.namespace.as_deref()).await?;
+    // Try to build kube client. If it fails and we're in a pod, degrade to local-only mode.
+    let scan_data = match build_client(&args).await {
+        Ok(client) => {
+            scanner::run_scan(&client, args.namespace.as_deref(), pod_context).await?
+        }
+        Err(e) => {
+            if in_pod {
+                eprintln!(
+                    "[!] API client failed: {}",
+                    e
+                );
+                eprintln!("[*] Running in local-only mode (no API access).");
+                scanner::ScanData {
+                    identity: pod_identity
+                        .unwrap_or_else(|| "unknown (no API access)".to_string()),
+                    pod_context,
+                    ..Default::default()
+                }
+            } else {
+                bail!("Cannot connect to cluster: {}", e);
+            }
+        }
+    };
 
     let mut results = analyzer::analyze(&scan_data)?;
 
@@ -70,8 +101,8 @@ async fn build_client(args: &Cli) -> Result<Client> {
     let config = match &args.kubeconfig {
         Some(path) => {
             std::env::set_var("KUBECONFIG", path);
-            let mut cfg = kube::Config::from_kubeconfig(&kube::config::KubeConfigOptions::default())
-                .await?;
+            let mut cfg =
+                kube::Config::from_kubeconfig(&kube::config::KubeConfigOptions::default()).await?;
             if let Some(ref user) = args.as_user {
                 cfg.auth_info.impersonate = Some(user.clone());
             }

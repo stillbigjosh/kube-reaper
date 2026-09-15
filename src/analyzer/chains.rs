@@ -112,6 +112,35 @@ pub struct SecretFinding {
     pub attack_path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceFinding {
+    pub name: String,
+    pub namespace: String,
+    pub service_type: String,
+    pub ports: String,
+    pub severity: Severity,
+    pub attack_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigMapFinding {
+    pub name: String,
+    pub namespace: String,
+    pub sensitive_keys: Vec<String>,
+    pub severity: Severity,
+    pub attack_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CronJobFinding {
+    pub name: String,
+    pub namespace: String,
+    pub schedule: String,
+    pub service_account: String,
+    pub severity: Severity,
+    pub attack_path: String,
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct ScanResults {
     pub findings: Vec<Finding>,
@@ -122,6 +151,9 @@ pub struct ScanResults {
     pub identity_profiles: Vec<IdentityProfile>,
     pub pod_context_findings: Vec<PodContextFinding>,
     pub secret_findings: Vec<SecretFinding>,
+    pub service_findings: Vec<ServiceFinding>,
+    pub configmap_findings: Vec<ConfigMapFinding>,
+    pub cronjob_findings: Vec<CronJobFinding>,
     pub identity: String,
     pub cluster_info: ClusterInfo,
 }

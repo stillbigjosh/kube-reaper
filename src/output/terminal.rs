@@ -1,8 +1,8 @@
 use colored::Colorize;
 
 use crate::analyzer::chains::{
-    AttackChain, CrdFindingResult, Finding, IdentityProfile, NamespaceFinding, PodContextFinding,
-    PodFinding, ScanResults, SecretFinding,
+    AttackChain, ConfigMapFinding, CrdFindingResult, CronJobFinding, Finding, IdentityProfile,
+    NamespaceFinding, PodContextFinding, PodFinding, ScanResults, SecretFinding, ServiceFinding,
 };
 use crate::analyzer::patterns::Severity;
 
@@ -69,6 +69,27 @@ pub fn print_results(results: &ScanResults) {
             results.secret_findings.len().to_string().green()
         );
     }
+    if !results.service_findings.is_empty() {
+        println!(
+            "  {} {}",
+            "Exposed Services:".bright_white().bold(),
+            results.service_findings.len().to_string().yellow()
+        );
+    }
+    if !results.configmap_findings.is_empty() {
+        println!(
+            "  {} {}",
+            "Sensitive ConfigMaps:".bright_white().bold(),
+            results.configmap_findings.len().to_string().yellow()
+        );
+    }
+    if !results.cronjob_findings.is_empty() {
+        println!(
+            "  {} {}",
+            "CronJobs (non-default SA):".bright_white().bold(),
+            results.cronjob_findings.len().to_string().yellow()
+        );
+    }
     println!("{}", "═══════════════════════════════════════════════════════".bright_white());
     println!();
 
@@ -84,6 +105,10 @@ pub fn print_results(results: &ScanResults) {
         print_pod_findings(&results.pod_findings);
     }
 
+    if !results.service_findings.is_empty() {
+        print_service_findings(&results.service_findings);
+    }
+
     if !results.crd_findings.is_empty() {
         print_crd_findings(&results.crd_findings);
     }
@@ -94,6 +119,14 @@ pub fn print_results(results: &ScanResults) {
 
     if !results.secret_findings.is_empty() {
         print_secret_findings(&results.secret_findings);
+    }
+
+    if !results.configmap_findings.is_empty() {
+        print_configmap_findings(&results.configmap_findings);
+    }
+
+    if !results.cronjob_findings.is_empty() {
+        print_cronjob_findings(&results.cronjob_findings);
     }
 
     if !results.namespace_findings.is_empty() {
@@ -447,6 +480,134 @@ fn print_secret_findings(findings: &[SecretFinding]) {
     }
 }
 
+fn print_service_findings(findings: &[ServiceFinding]) {
+    println!(
+        "\n\n{}\n",
+        "╔══════════════════════════════════════════════════╗"
+            .bright_yellow()
+            .bold()
+    );
+    println!(
+        "{}",
+        "║           EXPOSED SERVICES                       ║"
+            .bright_yellow()
+            .bold()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════╝"
+            .bright_yellow()
+            .bold()
+    );
+
+    for svc in findings {
+        println!(
+            "\n  {} [{}] {}/{} ({})",
+            "●".bright_white(),
+            severity_colored(&svc.severity),
+            svc.namespace.cyan(),
+            svc.name.bright_white().bold(),
+            svc.service_type.bright_yellow()
+        );
+        println!(
+            "    {} Ports: {}",
+            "│".bright_black(),
+            svc.ports.white()
+        );
+        println!(
+            "    {} {}: {}",
+            "└".bright_black(),
+            "Attack".bright_black(),
+            svc.attack_path.bright_yellow()
+        );
+    }
+}
+
+fn print_configmap_findings(findings: &[ConfigMapFinding]) {
+    println!(
+        "\n\n{}\n",
+        "╔══════════════════════════════════════════════════╗"
+            .yellow()
+            .bold()
+    );
+    println!(
+        "{}",
+        "║           SENSITIVE CONFIGMAPS                   ║"
+            .yellow()
+            .bold()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════╝"
+            .yellow()
+            .bold()
+    );
+
+    for cm in findings {
+        println!(
+            "\n  {} [{}] {}/{}",
+            "●".bright_white(),
+            severity_colored(&cm.severity),
+            cm.namespace.cyan(),
+            cm.name.bright_white().bold(),
+        );
+        println!(
+            "    {} Keys: {}",
+            "│".bright_black(),
+            cm.sensitive_keys.join(", ").bright_yellow()
+        );
+        println!(
+            "    {} {}: {}",
+            "└".bright_black(),
+            "Attack".bright_black(),
+            cm.attack_path.bright_yellow()
+        );
+    }
+}
+
+fn print_cronjob_findings(findings: &[CronJobFinding]) {
+    println!(
+        "\n\n{}\n",
+        "╔══════════════════════════════════════════════════╗"
+            .bright_blue()
+            .bold()
+    );
+    println!(
+        "{}",
+        "║           CRONJOBS                               ║"
+            .bright_blue()
+            .bold()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════╝"
+            .bright_blue()
+            .bold()
+    );
+
+    for cj in findings {
+        println!(
+            "\n  {} [{}] {}/{}",
+            "●".bright_white(),
+            severity_colored(&cj.severity),
+            cj.namespace.cyan(),
+            cj.name.bright_white().bold(),
+        );
+        println!(
+            "    {} Schedule: {} | SA: {}",
+            "│".bright_black(),
+            cj.schedule.white(),
+            cj.service_account.cyan()
+        );
+        println!(
+            "    {} {}: {}",
+            "└".bright_black(),
+            "Attack".bright_black(),
+            cj.attack_path.bright_yellow()
+        );
+    }
+}
+
 fn print_namespace_findings(findings: &[NamespaceFinding]) {
     println!(
         "\n\n{}\n",
@@ -689,6 +850,42 @@ fn print_summary(results: &ScanResults) {
             "Accessible Secrets:".bright_green().bold(),
             results.secret_findings.len().to_string().bright_green(),
             sa_tokens.to_string().bright_red().bold()
+        );
+    }
+
+    if !results.service_findings.is_empty() {
+        let lb = results
+            .service_findings
+            .iter()
+            .filter(|s| s.service_type == "LoadBalancer")
+            .count();
+        println!(
+            "  {} {} ({} LoadBalancer)",
+            "Exposed Services:".bright_yellow().bold(),
+            results.service_findings.len().to_string().bright_yellow(),
+            lb.to_string().bright_red().bold()
+        );
+    }
+
+    if !results.configmap_findings.is_empty() {
+        println!(
+            "  {} {}",
+            "Sensitive ConfigMaps:".yellow().bold(),
+            results.configmap_findings.len().to_string().yellow()
+        );
+    }
+
+    if !results.cronjob_findings.is_empty() {
+        let elevated = results
+            .cronjob_findings
+            .iter()
+            .filter(|c| c.severity <= Severity::High)
+            .count();
+        println!(
+            "  {} {} ({} with dangerous SA)",
+            "CronJobs:".bright_blue().bold(),
+            results.cronjob_findings.len().to_string().bright_blue(),
+            elevated.to_string().bright_red().bold()
         );
     }
 

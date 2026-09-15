@@ -14,7 +14,11 @@ kube-reaper scans a Kubernetes cluster from any identity (user, service account,
 - **Dangerous pod detection** that flags privileged containers, host mounts, runtime sockets, and exposed secrets
 - **31 CRD threat patterns** that identify attack surface from ArgoCD, Flux, Istio, cert-manager, Kyverno, Gatekeeper, Tekton, Crossplane, Calico, and others
 - **Secret triage** that classifies accessible secrets by type (SA tokens, registry creds, TLS certs, SSH keys, basic auth, opaque)
-- **Pod context analysis** that detects when you run inside a pod and inspects SA tokens, mounts, and environment variables
+- **Service enumeration** that finds services exposed outside the cluster (LoadBalancer, NodePort)
+- **ConfigMap enumeration** that finds ConfigMaps with sensitive keys (credentials, connection strings, API keys)
+- **CronJob enumeration** that lists scheduled jobs, their service accounts, and checks those accounts against the RBAC graph
+- **Pod context analysis** that checks for container escape vectors, Linux capabilities, cloud metadata (IMDS), network interfaces, SA tokens, mounts, and environment variables
+- **kubectl-less operation** that does local-only checks (escape vectors, capabilities, IMDS, network) when the API server is not reachable from a pod
 - **RBAC graph enumeration** that maps all identities to their effective permissions and flags overprivileged pivot targets
 - **Impersonation scanning** that lets you scan as a different user or group
 
@@ -136,9 +140,12 @@ The terminal output has these sections (each appears only when it has findings):
 
 | Section | Description |
 |---|---|
-| Pod Context Analysis | Findings from inside the current pod (SA token, mounts, env vars) |
+| Pod Context Analysis | Escape vectors, capabilities, cloud IMDS, network info, SA token, mounts, env vars |
 | Attack Path Chains | Multi-step attack paths with step-by-step instructions |
 | Dangerous Pods | Running pods with security issues (privileged, host mounts, secrets) |
+| Exposed Services | LoadBalancer and NodePort services that are reachable from outside the cluster |
+| Sensitive ConfigMaps | ConfigMaps that have keys which contain credentials or secrets |
+| CronJobs | Scheduled jobs that use service accounts with dangerous permissions |
 | Secret Triage | Accessible secrets classified by type and attack value |
 | CRD Attack Surface | Custom resources from known dangerous operators |
 | Other Identities | Overprivileged identities that are pivot targets |
@@ -153,7 +160,7 @@ For full details on each feature, see the docs folder:
 - **[Dangerous Permissions](docs/permissions.md)** - All 55 permission patterns with severity, attack path, and capabilities
 - **[Attack Chains](docs/chains.md)** - All 12 chain types with step-by-step exploitation details
 - **[CRD Awareness](docs/crds.md)** - All 31 CRD patterns across 10 operator categories
-- **[Pod Context Detection](docs/pod-context.md)** - How pod context analysis works and what it detects
+- **[Pod Context Detection](docs/pod-context.md)** - Escape vectors, capabilities, cloud IMDS, network checks, and kubectl-less mode
 - **[Architecture](docs/architecture.md)** - Source layout and module responsibilities
 
 ## Requirements
@@ -171,9 +178,12 @@ For full details on each feature, see the docs folder:
 | Namespace listing | `list namespaces` |
 | Pod enumeration | `list pods` in target namespaces |
 | Secret triage | `list secrets` in target namespaces |
+| Service scan | `list services` in target namespaces |
+| ConfigMap scan | `list configmaps` in target namespaces |
+| CronJob scan | `list cronjobs` in target namespaces |
 | RBAC graph | `list roles, clusterroles, rolebindings, clusterrolebindings` |
 | CRD detection | `list customresourcedefinitions` |
-| Pod context | No API permissions needed (reads local filesystem) |
+| Pod context | No API permissions necessary (reads the local filesystem and network) |
 
 If a scan module lacks permissions, it reports that and continues. No module failure stops the scan.
 

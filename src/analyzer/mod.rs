@@ -3,9 +3,9 @@ pub mod patterns;
 
 use anyhow::Result;
 use chains::{
-    ChainBuilder, CrdFindingResult, Finding, IdentityPermissions,
-    IdentityProfile, NamespaceFinding, NamespaceSecurity, PodContextFinding, PodFinding,
-    PodTarget, SaProfile, SecretFinding, PermissionRule, ScanResults,
+    ChainBuilder, ConfigMapFinding, CrdFindingResult, CronJobFinding, Finding,
+    IdentityPermissions, IdentityProfile, NamespaceFinding, NamespaceSecurity, PodContextFinding,
+    PodFinding, PodTarget, PermissionRule, SaProfile, ScanResults, SecretFinding, ServiceFinding,
 };
 use patterns::{all_dangerous_permissions, Severity};
 
@@ -115,6 +115,15 @@ pub fn analyze(data: &ScanData) -> Result<ScanResults> {
 
     // === Secret triage ===
     results.secret_findings = analyze_secrets(data);
+
+    // === Service findings ===
+    results.service_findings = analyze_services(data);
+
+    // === ConfigMap findings ===
+    results.configmap_findings = analyze_configmaps(data);
+
+    // === CronJob findings ===
+    results.cronjob_findings = analyze_cronjobs(data);
 
     // === Attack chains ===
     let identities: Vec<IdentityPermissions> = data
@@ -458,6 +467,98 @@ fn analyze_pod_context(data: &ScanData) -> Vec<PodContextFinding> {
         });
     }
 
+    // Capabilities
+    for cap in &ctx.capabilities {
+        if !cap.dangerous {
+            continue;
+        }
+        let severity = match cap.name.as_str() {
+            "ALL CAPABILITIES" | "CAP_SYS_ADMIN" | "CAP_SYS_MODULE" | "CAP_SYS_RAWIO" => {
+                Severity::Critical
+            }
+            "CAP_SYS_PTRACE" | "CAP_DAC_OVERRIDE" | "CAP_DAC_READ_SEARCH" | "CAP_BPF" => {
+                Severity::High
+            }
+            "CAP_NET_ADMIN" | "CAP_NET_RAW" | "CAP_SETUID" | "CAP_SETGID" | "CAP_MKNOD" => {
+                Severity::High
+            }
+            _ => Severity::Medium,
+        };
+
+        findings.push(PodContextFinding {
+            finding_type: format!("Capability: {}", cap.name),
+            detail: cap.reason.clone(),
+            severity,
+            attack_path: cap.reason.clone(),
+        });
+    }
+
+    // Cloud metadata (IMDS)
+    for meta in &ctx.cloud_metadata {
+        if !meta.accessible {
+            continue;
+        }
+        findings.push(PodContextFinding {
+            finding_type: format!("Cloud Metadata: {} IMDS", meta.provider),
+            detail: meta.detail.clone(),
+            severity: Severity::Critical,
+            attack_path: meta.detail.clone(),
+        });
+    }
+
+    // Escape vectors
+    for vector in &ctx.escape_vectors {
+        let severity = match vector.vector_type.as_str() {
+            "Privileged Container" | "Host Root Filesystem" | "Host Filesystem Mount"
+            | "Core Pattern Escape" | "Cgroup Release Agent" => Severity::Critical,
+            "SysRq Trigger" => Severity::High,
+            "Running as Root" => Severity::Medium,
+            _ => Severity::Medium,
+        };
+
+        findings.push(PodContextFinding {
+            finding_type: format!("Escape: {}", vector.vector_type),
+            detail: format!("{} ({})", vector.detail, vector.path),
+            severity,
+            attack_path: vector.detail.clone(),
+        });
+    }
+
+    // Network info
+    if let Some(ref net) = ctx.network_info {
+        let host_ifaces: Vec<&String> = net
+            .interfaces
+            .iter()
+            .filter(|i| !is_cni_interface(i))
+            .collect();
+
+        if host_ifaces.len() > 1 {
+            findings.push(PodContextFinding {
+                finding_type: "Multiple Network Interfaces".to_string(),
+                detail: format!(
+                    "Non-CNI interfaces: {}. Multiple host interfaces indicate hostNetwork is enabled.",
+                    host_ifaces.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+                severity: Severity::Medium,
+                attack_path: "hostNetwork detected. Can bind to node ports and sniff node traffic.".to_string(),
+            });
+        }
+
+        if !net.listening_ports.is_empty() {
+            let port_list: Vec<String> = net
+                .listening_ports
+                .iter()
+                .map(|p| format!("{}:{}", p.address, p.port))
+                .collect();
+            findings.push(PodContextFinding {
+                finding_type: "Listening Ports".to_string(),
+                detail: format!("Ports: {}", port_list.join(", ")),
+                severity: Severity::Info,
+                attack_path: "Listening ports in this container. May accept connections from other pods.".to_string(),
+            });
+        }
+    }
+
     findings.sort_by(|a, b| a.severity.cmp(&b.severity));
     findings
 }
@@ -554,6 +655,181 @@ fn is_default_grant(resource: &str) -> bool {
             | "selfsubjectrulesreviews"
             | "selfsubjectreviews"
     )
+}
+
+fn analyze_services(data: &ScanData) -> Vec<ServiceFinding> {
+    let mut findings = Vec::new();
+
+    for svc in &data.services {
+        let (severity, attack_path) = match svc.service_type.as_str() {
+            "LoadBalancer" => (
+                Severity::High,
+                "LoadBalancer service exposed externally. Accessible from outside the cluster. Check for sensitive endpoints.",
+            ),
+            "NodePort" => {
+                let node_ports: Vec<String> = svc
+                    .ports
+                    .iter()
+                    .filter_map(|p| p.node_port.map(|np| np.to_string()))
+                    .collect();
+                (
+                    Severity::Medium,
+                    if node_ports.is_empty() {
+                        "NodePort service accessible on all cluster nodes."
+                    } else {
+                        "NodePort service accessible on all cluster nodes at the listed ports."
+                    },
+                )
+            }
+            _ => continue,
+        };
+
+        let port_str: Vec<String> = svc
+            .ports
+            .iter()
+            .map(|p| {
+                if let Some(np) = p.node_port {
+                    format!("{}:{}->{}", p.protocol, np, p.port)
+                } else {
+                    format!("{}:{}", p.protocol, p.port)
+                }
+            })
+            .collect();
+
+        findings.push(ServiceFinding {
+            name: svc.name.clone(),
+            namespace: svc.namespace.clone(),
+            service_type: svc.service_type.clone(),
+            ports: port_str.join(", "),
+            severity,
+            attack_path: attack_path.to_string(),
+        });
+    }
+
+    findings.sort_by(|a, b| a.severity.cmp(&b.severity));
+    findings
+}
+
+fn analyze_configmaps(data: &ScanData) -> Vec<ConfigMapFinding> {
+    let mut findings = Vec::new();
+
+    for cm in &data.configmaps {
+        if !cm.has_sensitive_keys {
+            continue;
+        }
+
+        let sensitive: Vec<String> = cm
+            .data_keys
+            .iter()
+            .filter(|k| {
+                let lower = k.to_lowercase();
+                [
+                    "password", "passwd", "secret", "token", "credential",
+                    "api_key", "apikey", "private_key", "secret_key",
+                    "auth", "dsn", "connection", "database_url", "db_url",
+                    "mysql", "postgres", "redis_url", "mongodb", "smtp",
+                    "aws_", "azure_", "gcp_",
+                ]
+                .iter()
+                .any(|p| lower.contains(p))
+            })
+            .cloned()
+            .collect();
+
+        if sensitive.is_empty() {
+            continue;
+        }
+
+        findings.push(ConfigMapFinding {
+            name: cm.name.clone(),
+            namespace: cm.namespace.clone(),
+            sensitive_keys: sensitive,
+            severity: Severity::Medium,
+            attack_path: format!(
+                "ConfigMap may contain credentials. Inspect: kubectl get configmap {} -n {} -o yaml",
+                cm.name, cm.namespace
+            ),
+        });
+    }
+
+    findings
+}
+
+fn analyze_cronjobs(data: &ScanData) -> Vec<CronJobFinding> {
+    let mut findings = Vec::new();
+
+    let dangerous_sas: Vec<String> = if let Some(ref graph) = data.rbac_graph {
+        let profiles = graph.build_identity_profiles();
+        let dangerous = all_dangerous_permissions();
+        profiles
+            .iter()
+            .filter(|p| {
+                p.kind == "ServiceAccount"
+                    && p.effective_rules.iter().any(|r| {
+                        !is_default_grant(&r.resource)
+                            && r.verbs.iter().any(|v| {
+                                dangerous
+                                    .iter()
+                                    .any(|d| permission_matches(d, &r.resource, v, &r.api_group))
+                            })
+                    })
+            })
+            .map(|p| p.identity.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    for cj in &data.cronjobs {
+        if cj.service_account == "default" {
+            continue;
+        }
+
+        let full_sa = format!(
+            "system:serviceaccount:{}:{}",
+            cj.namespace, cj.service_account
+        );
+
+        let is_dangerous = dangerous_sas.iter().any(|s| s == &full_sa);
+
+        let (severity, attack_path) = if is_dangerous {
+            (
+                Severity::High,
+                format!(
+                    "CronJob runs as SA '{}' which has dangerous RBAC permissions. Modify the CronJob to execute with this SA's privileges.",
+                    cj.service_account
+                ),
+            )
+        } else {
+            (
+                Severity::Low,
+                format!(
+                    "CronJob runs as non-default SA '{}'. Check SA permissions: kubectl auth can-i --list --as={}",
+                    cj.service_account, full_sa
+                ),
+            )
+        };
+
+        findings.push(CronJobFinding {
+            name: cj.name.clone(),
+            namespace: cj.namespace.clone(),
+            schedule: cj.schedule.clone(),
+            service_account: cj.service_account.clone(),
+            severity,
+            attack_path,
+        });
+    }
+
+    findings.sort_by(|a, b| a.severity.cmp(&b.severity));
+    findings
+}
+
+fn is_cni_interface(name: &str) -> bool {
+    let cni_prefixes = [
+        "cali", "tunl", "vxlan", "flannel", "cni", "veth", "docker", "cbr",
+        "dummy", "kube-ipvs", "nodelocaldns", "cilium", "lxc", "wg",
+    ];
+    cni_prefixes.iter().any(|p| name.starts_with(p))
 }
 
 fn permission_matches(
