@@ -1,6 +1,6 @@
 # Dangerous Permission Patterns
 
-kube-reaper checks 55 permission patterns. Each pattern has a severity, attack path, and list of capabilities it enables.
+kube-reaper checks 50 permission patterns. Each pattern has a severity, attack path, and list of capabilities it enables.
 
 Patterns marked **[U]** are unconventional. Most RBAC scanners do not check for them.
 
@@ -80,15 +80,10 @@ These permissions enable reconnaissance and disruption.
 | 47 | Read Node Information | `nodes` | `get, list` | List nodes to map cluster topology. Identify node IPs for direct Kubelet API probing. |
 | 48 | **[U]** Patch/Update Nodes | `nodes` | `patch, update` | Taint all nodes except one. Force all new pods to schedule on your compromised node. |
 | 49 | Delete Pods | `pods` | `delete` | Delete a pod so the controller recreates it. Intercept during startup (mount injection, env var capture). |
-| 50 | **[U]** Create Events | `events` | `create` | Create misleading events to confuse SOC/monitoring and mask real attack activity. |
-| 51 | **[U]** Manipulate Leases | `leases` | `delete, update, patch` | Delete/modify lease objects to force leader re-election. Can cause split-brain in controllers. |
-| 52 | **[U]** Create/Modify ResourceQuotas | `resourcequotas` | `create, update, patch` | Set extremely low quotas so legitimate pods cannot be created. Denial of service. |
-| 53 | **[U]** Create/Modify LimitRanges | `limitranges` | `create, update, patch` | Set extremely low limit ranges so new pods get minimal resources. Performance denial of service. |
-| 54 | **[U]** Create PriorityClasses | `priorityclasses` | `create` | Create a PriorityClass with max priority. Deploy your pods with it to evict legitimate workloads. |
 
-## Pattern #55
+## Pattern #50
 
-Pattern 55 is a composite: it checks for `selfsubjectaccessreviews`, `selfsubjectrulesreviews`, and `selfsubjectreviews`. These are default grants to all authenticated users and are excluded from findings.
+Pattern 50 is a composite: it checks for `selfsubjectaccessreviews`, `selfsubjectrulesreviews`, and `selfsubjectreviews`. These are default grants to all authenticated users and are excluded from findings.
 
 ## Capabilities
 
@@ -107,6 +102,5 @@ Each permission pattern maps to one or more attack capabilities:
 | Admission Bypass | Disable or bypass admission controllers |
 | Information Disclosure | Read sensitive data not intended for this identity |
 | Denial of Service | Disrupt legitimate workloads |
-| Log Injection | Insert fake events to confuse monitoring |
 | Network Bypass | Remove or circumvent network segmentation |
 | Identity Forge | Create or mint new identities (tokens, certs) |
