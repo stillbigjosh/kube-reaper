@@ -5,6 +5,8 @@ use crate::analyzer::chains::{
     NamespaceFinding, PodContextFinding, PodFinding, ScanResults, SecretFinding, ServiceFinding,
 };
 use crate::analyzer::patterns::Severity;
+use crate::scanner::admission::NamespaceAdmissionResult;
+use crate::scanner::dns_discovery::DnsDiscoveryResults;
 use crate::scanner::pivot::{PivotGraph, PivotMethod};
 
 pub fn print_banner() {
@@ -102,6 +104,32 @@ pub fn print_results(results: &ScanResults) {
             results.cronjob_findings.len().to_string().yellow()
         );
     }
+    if let Some(ref dns) = results.dns_discovery {
+        if !dns.discovered_services.is_empty() {
+            println!(
+                "  {} {}",
+                "DNS Discovered Services:".bright_white().bold(),
+                dns.discovered_services.len().to_string().cyan()
+            );
+        }
+    }
+    let admission_probed: Vec<&NamespaceAdmissionResult> = results
+        .admission_results
+        .iter()
+        .filter(|r| r.can_create_pods)
+        .collect();
+    if !admission_probed.is_empty() {
+        let weak_ns = admission_probed
+            .iter()
+            .filter(|r| r.probes.iter().any(|p| p.allowed))
+            .count();
+        println!(
+            "  {} {} probed ({} with weak enforcement)",
+            "Admission Controller:".bright_white().bold(),
+            admission_probed.len().to_string().yellow(),
+            weak_ns.to_string().bright_red()
+        );
+    }
     println!("{}", "═══════════════════════════════════════════════════════".bright_white());
     println!();
 
@@ -149,6 +177,21 @@ pub fn print_results(results: &ScanResults) {
 
     if !results.namespace_findings.is_empty() {
         print_namespace_findings(&results.namespace_findings);
+    }
+
+    if let Some(ref dns) = results.dns_discovery {
+        if !dns.discovered_services.is_empty() {
+            print_dns_discovery(dns);
+        }
+    }
+
+    let admission_probed: Vec<&NamespaceAdmissionResult> = results
+        .admission_results
+        .iter()
+        .filter(|r| r.can_create_pods)
+        .collect();
+    if !admission_probed.is_empty() {
+        print_admission_results(&admission_probed);
     }
 
     if !results.findings.is_empty() {
@@ -878,6 +921,144 @@ fn pivot_short(identity: &str) -> &str {
         .unwrap_or(identity)
 }
 
+fn print_dns_discovery(dns: &DnsDiscoveryResults) {
+    println!(
+        "\n\n{}\n",
+        "╔══════════════════════════════════════════════════╗"
+            .bright_cyan()
+            .bold()
+    );
+    println!(
+        "{}",
+        "║           DNS SERVICE DISCOVERY                  ║"
+            .bright_cyan()
+            .bold()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════╝"
+            .bright_cyan()
+            .bold()
+    );
+
+    if let Some(ref server) = dns.dns_server {
+        println!(
+            "  {} {}",
+            "DNS Server:".bright_white().bold(),
+            server.cyan()
+        );
+    }
+    if let Some(ref domain) = dns.cluster_domain {
+        println!(
+            "  {} {}",
+            "Cluster Domain:".bright_white().bold(),
+            domain.cyan()
+        );
+    }
+    if !dns.search_domains.is_empty() {
+        println!(
+            "  {} {}",
+            "Search Domains:".bright_white().bold(),
+            dns.search_domains.join(", ").bright_black()
+        );
+    }
+    println!();
+
+    let mut by_ns: std::collections::HashMap<&str, Vec<&crate::scanner::dns_discovery::DiscoveredService>> =
+        std::collections::HashMap::new();
+    for svc in &dns.discovered_services {
+        by_ns.entry(svc.namespace.as_str()).or_default().push(svc);
+    }
+
+    let mut ns_keys: Vec<&&str> = by_ns.keys().collect();
+    ns_keys.sort();
+
+    for ns in ns_keys {
+        let svcs = &by_ns[*ns];
+        println!("  {} {}", "Namespace:".bright_white().bold(), ns.cyan());
+        for svc in svcs {
+            println!(
+                "    {} {} -> {} ({})",
+                "●".bright_white(),
+                svc.name.bright_white().bold(),
+                svc.cluster_ip.green(),
+                svc.discovery_method.bright_black()
+            );
+        }
+        println!();
+    }
+}
+
+fn print_admission_results(results: &[&NamespaceAdmissionResult]) {
+    println!(
+        "\n\n{}\n",
+        "╔══════════════════════════════════════════════════╗"
+            .bright_yellow()
+            .bold()
+    );
+    println!(
+        "{}",
+        "║           ADMISSION CONTROLLER PROBING            ║"
+            .bright_yellow()
+            .bold()
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════╝"
+            .bright_yellow()
+            .bold()
+    );
+    println!(
+        "  {}",
+        "Dry-run pod probes (no pods created)".bright_black()
+    );
+    println!();
+
+    for result in results {
+        let allowed_count = result.probes.iter().filter(|p| p.allowed).count();
+        let total = result.probes.len();
+        let enforcement = if allowed_count == total {
+            "NO ENFORCEMENT".bright_red().bold()
+        } else if allowed_count == 0 {
+            "FULLY ENFORCED".green().bold()
+        } else {
+            "PARTIAL".yellow().bold()
+        };
+
+        println!(
+            "  {} {} [{}]  {}/{} probes allowed",
+            "●".bright_white(),
+            result.namespace.cyan().bold(),
+            enforcement,
+            allowed_count.to_string().bright_white(),
+            total.to_string().bright_white()
+        );
+
+        for probe in &result.probes {
+            let status = if probe.allowed {
+                "ALLOWED".bright_red().bold()
+            } else {
+                "DENIED".green()
+            };
+            println!(
+                "    {} {}: {}",
+                "│".bright_black(),
+                probe.probe_type.bright_white(),
+                status
+            );
+            if !probe.allowed {
+                let short_detail: String = probe.detail.chars().take(80).collect();
+                println!(
+                    "    {}   {}",
+                    "│".bright_black(),
+                    short_detail.bright_black()
+                );
+            }
+        }
+        println!();
+    }
+}
+
 fn print_summary(results: &ScanResults) {
     println!(
         "\n{}\n",
@@ -1045,6 +1226,34 @@ fn print_summary(results: &ScanResults) {
                 pivot.max_depth_reached.to_string().yellow()
             );
         }
+    }
+
+    if let Some(ref dns) = results.dns_discovery {
+        if !dns.discovered_services.is_empty() {
+            println!(
+                "  {} {}",
+                "DNS Discovered Services:".bright_cyan().bold(),
+                dns.discovered_services.len().to_string().bright_cyan()
+            );
+        }
+    }
+
+    let admission_probed: Vec<&NamespaceAdmissionResult> = results
+        .admission_results
+        .iter()
+        .filter(|r| r.can_create_pods)
+        .collect();
+    if !admission_probed.is_empty() {
+        let weak_ns = admission_probed
+            .iter()
+            .filter(|r| r.probes.iter().any(|p| p.allowed))
+            .count();
+        println!(
+            "  {} {} namespaces ({} with weak enforcement)",
+            "Admission Probing:".bright_yellow().bold(),
+            admission_probed.len().to_string().bright_yellow(),
+            weak_ns.to_string().bright_red().bold()
+        );
     }
 
     println!();

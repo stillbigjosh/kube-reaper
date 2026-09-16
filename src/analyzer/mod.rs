@@ -16,6 +16,8 @@ pub fn analyze(data: &ScanData) -> Result<ScanResults> {
         identity: data.identity.clone(),
         cluster_info: data.cluster_info.clone(),
         pivot_graph: data.pivot_graph.clone(),
+        dns_discovery: data.dns_discovery.clone(),
+        admission_results: data.admission_results.clone(),
         ..Default::default()
     };
 

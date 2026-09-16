@@ -1,6 +1,8 @@
+pub mod admission;
 pub mod configmaps;
 pub mod crds;
 pub mod cronjobs;
+pub mod dns_discovery;
 pub mod namespace;
 pub mod pivot;
 pub mod pod_context;
@@ -31,6 +33,8 @@ pub struct ScanData {
     pub configmaps: Vec<configmaps::ConfigMapRef>,
     pub cronjobs: Vec<cronjobs::CronJobInfo>,
     pub pivot_graph: Option<pivot::PivotGraph>,
+    pub dns_discovery: Option<dns_discovery::DnsDiscoveryResults>,
+    pub admission_results: Vec<admission::NamespaceAdmissionResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -278,6 +282,43 @@ pub async fn run_scan(
         Err(_) => {
             eprintln!("[!] Cannot enumerate CRDs (RBAC denied). Skipping CRD analysis.");
         }
+    }
+
+    // DNS service discovery (runs from inside a pod without RBAC)
+    if data.pod_context.running_in_pod {
+        eprintln!("[*] Running DNS service discovery...");
+        let ns_names: Vec<String> = data.namespaces.iter().map(|n| n.name.clone()).collect();
+        let dns_results = dns_discovery::discover_services(&ns_names);
+        let count = dns_results.discovered_services.len();
+        if count > 0 {
+            eprintln!(
+                "[+] DNS discovery: {} services found via CoreDNS",
+                count
+            );
+        } else {
+            eprintln!("[!] DNS discovery: no services resolved (DNS may be restricted)");
+        }
+        data.dns_discovery = Some(dns_results);
+    }
+
+    // Admission controller probing (dry-run, no pods created)
+    eprintln!("[*] Probing admission controller enforcement...");
+    let mut admission_count = 0;
+    for ns in &target_namespaces {
+        let result = admission::probe_namespace(client, ns).await;
+        if result.can_create_pods {
+            admission_count += 1;
+        }
+        data.admission_results.push(result);
+    }
+    if admission_count > 0 {
+        eprintln!(
+            "[+] Admission probing: {} namespaces probed ({} allow pod creation)",
+            data.admission_results.len(),
+            admission_count
+        );
+    } else {
+        eprintln!("[!] Admission probing: cannot create pods in any namespace");
     }
 
     // Enumerate service accounts per namespace

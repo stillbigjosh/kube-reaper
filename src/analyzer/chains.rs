@@ -155,6 +155,8 @@ pub struct ScanResults {
     pub configmap_findings: Vec<ConfigMapFinding>,
     pub cronjob_findings: Vec<CronJobFinding>,
     pub pivot_graph: Option<crate::scanner::pivot::PivotGraph>,
+    pub dns_discovery: Option<crate::scanner::dns_discovery::DnsDiscoveryResults>,
+    pub admission_results: Vec<crate::scanner::admission::NamespaceAdmissionResult>,
     pub identity: String,
     pub cluster_info: ClusterInfo,
 }
