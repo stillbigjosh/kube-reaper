@@ -1,6 +1,6 @@
 # kube-reaper
 
-Kubernetes RBAC attack path scanner. It finds what your identity can do, flags dangerous permissions, and chains them into multi-step paths to cluster compromise.
+Kubernetes RBAC attack path mapper. It finds what your identity can do, flags dangerous permissions, and chains them into multi-step paths to cluster compromise.
 
 Built for red teamers and penetration testers.
 
