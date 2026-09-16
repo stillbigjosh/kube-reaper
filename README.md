@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/01.png" alt="kube-reaper" width="300" style="margin-bottom: 20px;"/>
+<img src="docs/assets/01.png" alt="kube-reaper" width="600" style="margin-bottom: 20px;"/>
 </div>
 
 # kube-reaper
