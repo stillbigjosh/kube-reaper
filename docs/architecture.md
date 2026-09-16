@@ -19,6 +19,8 @@ src/
     configmaps.rs      ConfigMap scan with sensitive key detection
     cronjobs.rs        CronJob scan (schedule, SA, image)
     crds.rs            CRD enumeration and threat classification
+    dns_discovery.rs   CoreDNS service discovery (raw UDP queries, no RBAC needed)
+    admission.rs       Admission controller probing (dry-run pod creates per namespace)
     pod_context.rs     In-pod checks (escape vectors, capabilities, IMDS, network, SA token, mounts, env vars)
     pivot.rs           Recursive identity pivoting (SA token secrets, TokenRequest, BFS traversal)
   analyzer/
@@ -45,6 +47,8 @@ The scanner runs API calls and local filesystem checks to collect raw cluster st
 | `configmaps.rs` | ConfigMap names and data keys. Marks keys that match sensitive patterns. |
 | `cronjobs.rs` | CronJob schedule, service account, image, and suspended state |
 | `crds.rs` | CRD definitions from the API server |
+| `dns_discovery.rs` | Does not use the API. Reads `/etc/resolv.conf` for the cluster DNS server, then sends raw UDP A-record queries for 48 common service names across all known namespaces. Returns discovered services with ClusterIPs. Only runs inside a pod. |
+| `admission.rs` | Sends dry-run pod creates (`PostParams { dry_run: true }`) to test admission controller enforcement per namespace. Probes 6 configurations: privileged, hostPID, hostNetwork, hostPath, CAP_SYS_ADMIN, runAsRoot. No pods are created. Requires `create pods` in the target namespace. |
 | `pod_context.rs` | Does not use the API. Checks escape vectors, Linux capabilities, cloud IMDS, network interfaces and ports, SA token, mounts, and env vars. |
 | `pivot.rs` | Recursive identity pivot via SA token secrets and TokenRequest API. See [Pivot Scanner](#pivot-scanner). |
 
@@ -158,6 +162,10 @@ main.rs
      |
      +-- client OK -> scanner::run_scan() -> ScanData (full scan)
      |                  |
+     |                  +-- in pod -> dns_discovery (raw UDP to CoreDNS, no API)
+     |                  |
+     |                  +-- admission probing (dry-run pod creates per namespace)
+     |                  |
      |                  +-- --pivot flag set -> pivot::run_pivot()
      |                  |     BFS: read SA secrets, mint tokens,
      |                  |     enumerate permissions per pivoted identity
@@ -174,6 +182,10 @@ main.rs
 ```
 
 Pod context detection runs first, before the API client is built. Escape vectors, capabilities, cloud IMDS, and network checks work without API access.
+
+DNS discovery runs only inside a pod. It reads `/etc/resolv.conf` for the cluster DNS server and sends raw UDP queries. It does not use the Kubernetes API.
+
+Admission probing runs for every namespace where the identity can create pods. It uses dry-run requests, so no pods are created. Namespaces where RBAC blocks pod creation are skipped.
 
 If the kube client fails inside a pod, kube-reaper uses kubectl-less mode and reports only pod context results. If the client fails outside a pod, the tool exits with an error.
 

@@ -161,6 +161,8 @@ The terminal output shows these sections (each appears only when it has findings
 | CronJobs | Scheduled jobs with dangerous service account permissions |
 | Secret Triage | Accessible secrets classified by type and attack value |
 | CRD Attack Surface | Custom resources from known dangerous operators |
+| DNS Service Discovery | Services found via CoreDNS queries (no RBAC needed) |
+| Admission Controller Probing | Per-namespace dry-run results for 6 dangerous pod configurations |
 | Other Identities | Overprivileged identities that are pivot targets |
 | Namespace Security | PSS enforcement status per namespace |
 | Dangerous Permissions | Individual permission findings by severity |
