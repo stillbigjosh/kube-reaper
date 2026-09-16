@@ -4,14 +4,11 @@
 
 # kube-reaper
 
+</div>
+
 Kubernetes RBAC attack path mapper. It finds what your identity can do, flags dangerous permissions, and chains them into multi-step paths to cluster compromi>
 
 Built for red teamers and penetration testers.
-
-
-</div>
-
----
 
 
 ## What It Does
