@@ -12,7 +12,7 @@ pub fn print_banner() {
     ╦╔═╦ ╦╔╗ ╔═╗  ╦═╗╔═╗╔═╗╔═╗╔═╗╦═╗
     ╠╩╗║ ║╠╩╗║╣   ╠╦╝║╣ ╠═╣╠═╝║╣ ╠╦╝
     ╩ ╩╚═╝╚═╝╚═╝  ╩╚═╚═╝╩ ╩╩  ╚═╝╩╚═
-    Kubernetes RBAC Attack Path Scanner
+    Kubernetes RBAC Attack Path Mapper
     "#;
     println!("{}", banner.red().bold());
 }

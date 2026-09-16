@@ -1,3 +1,8 @@
+<div align="center">
+
+<img src="docs/assets/01.png" alt="kube-reaper" width="300" style="margin-bottom: 20px;"/>
+</div>
+
 # kube-reaper
 
 Kubernetes RBAC attack path mapper. It finds what your identity can do, flags dangerous permissions, and chains them into multi-step paths to cluster compromise.

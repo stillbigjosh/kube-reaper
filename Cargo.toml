@@ -2,7 +2,7 @@
 name = "kube-reaper"
 version = "0.1.0"
 edition = "2021"
-description = "Kubernetes RBAC attack path scanner - enumerate permissions, flag dangerous misconfigurations, and chain attack paths from your current identity to cluster compromise"
+description = "Kubernetes RBAC attack path mapper - enumerate permissions, flag dangerous misconfigurations, and chain attack paths from your current identity to cluster compromise"
 license = "MIT"
 
 [dependencies]

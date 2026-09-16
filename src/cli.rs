@@ -3,7 +3,7 @@ use clap::{Parser, ValueEnum};
 #[derive(Parser, Debug)]
 #[command(
     name = "kube-reaper",
-    about = "Kubernetes RBAC Attack Path Scanner",
+    about = "Kubernetes RBAC Attack Path Mapper",
     long_about = "Enumerate RBAC permissions, flag dangerous misconfigurations, and chain attack paths from your current identity to cluster compromise.",
     version
 )]
