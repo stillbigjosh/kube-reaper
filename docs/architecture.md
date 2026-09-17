@@ -26,7 +26,7 @@ src/
   analyzer/
     mod.rs             Analysis control, all finding types, false positive suppression
     patterns.rs        55 dangerous permission definitions
-    chains.rs          12 chain builder types, chain deduplication
+    chains.rs          18 chain types, chain deduplication
   output/
     terminal.rs        Colored terminal output (PEASS-style)
     json.rs            JSON serialization and file output
@@ -125,7 +125,7 @@ The analyzer takes `ScanData` and produces findings, chains, and enriched identi
 | Module | What it produces |
 |---|---|
 | `patterns.rs` | 55 dangerous permission definitions with severity, resource, verbs, and attack path |
-| `chains.rs` | 12 chain types that link permissions into multi-step escalation paths |
+| `chains.rs` | 18 chain types that link permissions into multi-step escalation paths |
 | `mod.rs` | Permission matching with namespace-aware false positive suppression. Analyzes pods, CRDs, secrets, identities, services, ConfigMaps, CronJobs, and pod context. |
 
 ### False Positive Suppression

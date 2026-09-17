@@ -1,6 +1,6 @@
 # Dangerous Permission Patterns
 
-kube-reaper checks 50 permission patterns. Each pattern has a severity, attack path, and list of capabilities it enables.
+kube-reaper checks 55 permission patterns. Each pattern has a severity, attack path, and list of capabilities it enables.
 
 Patterns marked **[U]** are unconventional. Most RBAC scanners do not check for them.
 
@@ -46,6 +46,11 @@ These permissions enable lateral movement and credential access.
 | 27 | **[U]** Create/Modify Endpoints | `endpoints` | `create, update, patch` | Modify endpoints for an existing service to redirect traffic to your pod. MITM. |
 | 28 | **[U]** Create/Modify EndpointSlices | `endpointslices` | `create, update, patch` | Create/modify EndpointSlice to redirect service traffic to your pod. |
 | 29 | Create Pods (With SA Spec) | `pods` | `create` | Create a pod with serviceAccountName set to a privileged SA. Inherit its RBAC permissions. |
+| 30 | Patch Deployments (Identity Theft) | `deployments` | `patch, update` | Patch a Deployment's serviceAccountName and command. On rollout, new pods run as the target SA with attacker code. |
+| 31 | Patch DaemonSets (Identity Theft) | `daemonsets` | `patch, update` | Patch a DaemonSet's serviceAccountName. Runs on every node, giving cluster-wide code execution under any SA. |
+| 32 | Patch StatefulSets (Identity Theft) | `statefulsets` | `patch, update` | Patch a StatefulSet's serviceAccountName. Persistent storage survives restarts, so the backdoor persists. |
+| 33 | Patch/Update Secrets | `secrets` | `patch, update` | Overwrite secret data. Inject credentials into secrets that other workloads mount, or replace TLS certs. |
+| 34 | **[U]** Watch Secrets | `secrets` | `watch` | Stream all secret changes in real time. Capture rotated credentials and new SA tokens as they appear. |
 
 ## MEDIUM
 
@@ -53,23 +58,23 @@ These permissions enable bypass, persistence, and information disclosure.
 
 | # | Pattern | Resource | Verbs | Attack Path |
 |---|---------|----------|-------|-------------|
-| 30 | **[U]** Create/Modify Mutating Webhooks | `mutatingwebhookconfigurations` | `create, update, patch` | Register a MutatingWebhookConfiguration that injects a sidecar into every new pod cluster-wide. |
-| 31 | **[U]** Create/Modify Validating Webhooks | `validatingwebhookconfigurations` | `create, update, patch` | Register a ValidatingWebhookConfiguration that points to your server. See all API requests. |
-| 32 | **[U]** Modify ValidatingAdmissionPolicies | `validatingadmissionpolicies` | `delete, update, patch` | Delete or weaken ValidatingAdmissionPolicies to bypass security controls. |
-| 33 | **[U]** Patch/Update Namespaces | `namespaces` | `patch, update` | Remove the pod-security.kubernetes.io/enforce label. The namespace then accepts privileged pods. |
-| 34 | **[U]** Create PersistentVolumes | `persistentvolumes` | `create` | Create a PV with hostPath:/, create a PVC that claims it, then mount in your pod. |
-| 35 | **[U]** Create PersistentVolumeClaims | `persistentvolumeclaims` | `create` | Create a PVC that matches an existing PV. Mount it to read data from other workloads. |
-| 36 | **[U]** Delete NetworkPolicies | `networkpolicies` | `delete` | Delete NetworkPolicies so pods can communicate freely across namespace boundaries. |
-| 37 | **[U]** Create/Modify NetworkPolicies | `networkpolicies` | `create, update, patch` | Create a permissive NetworkPolicy that allows ingress/egress to your attacker pod. |
-| 38 | **[U]** Read Pod Logs | `pods/log` | `get` | Read logs of all accessible pods. Grep for passwords, tokens, and API keys. |
-| 39 | **[U]** Access Node Proxy | `nodes/proxy` | `create, get` | Use node proxy to reach Kubelet API (10250) through the API server. |
-| 40 | **[U]** Modify ConfigMaps (kube-system) | `configmaps` | `update, patch, delete` | Modify the coredns configmap for DNS poisoning. Modify kube-proxy for traffic manipulation. |
-| 41 | Create/Modify Roles | `roles` | `create, update, patch` | Create a Role with broad permissions, then create a RoleBinding to your SA. |
-| 42 | Create/Modify ClusterRoles | `clusterroles` | `create, update, patch` | Create a ClusterRole with * permissions, then bind it to your SA. |
-| 43 | **[U]** Create StatefulSets | `statefulsets` | `create` | Create a StatefulSet with a privileged pod template. Persistent workload with stable network identity. |
-| 44 | **[U]** Create ReplicaSets | `replicasets` | `create` | Create a ReplicaSet directly. Deploy pods without a Deployment audit trail. |
-| 45 | Read ConfigMaps | `configmaps` | `get, list` | List ConfigMaps. Find kubeconfig templates, connection strings, and API keys stored as config. |
-| 46 | **[U]** Delete ClusterRoleBindings | `clusterrolebindings` | `delete` | Delete security-critical bindings. Disable monitoring SAs, break OPA/Gatekeeper, disrupt RBAC enforcement. |
+| 35 | **[U]** Create/Modify Mutating Webhooks | `mutatingwebhookconfigurations` | `create, update, patch` | Register a MutatingWebhookConfiguration that injects a sidecar into every new pod cluster-wide. |
+| 36 | **[U]** Create/Modify Validating Webhooks | `validatingwebhookconfigurations` | `create, update, patch` | Register a ValidatingWebhookConfiguration that points to your server. See all API requests. |
+| 37 | **[U]** Modify ValidatingAdmissionPolicies | `validatingadmissionpolicies` | `delete, update, patch` | Delete or weaken ValidatingAdmissionPolicies to bypass security controls. |
+| 38 | **[U]** Patch/Update Namespaces | `namespaces` | `patch, update` | Remove the pod-security.kubernetes.io/enforce label. The namespace then accepts privileged pods. |
+| 39 | **[U]** Create PersistentVolumes | `persistentvolumes` | `create` | Create a PV with hostPath:/, create a PVC that claims it, then mount in your pod. |
+| 40 | **[U]** Create PersistentVolumeClaims | `persistentvolumeclaims` | `create` | Create a PVC that matches an existing PV. Mount it to read data from other workloads. |
+| 41 | **[U]** Delete NetworkPolicies | `networkpolicies` | `delete` | Delete NetworkPolicies so pods can communicate freely across namespace boundaries. |
+| 42 | **[U]** Create/Modify NetworkPolicies | `networkpolicies` | `create, update, patch` | Create a permissive NetworkPolicy that allows ingress/egress to your attacker pod. |
+| 43 | **[U]** Read Pod Logs | `pods/log` | `get` | Read logs of all accessible pods. Grep for passwords, tokens, and API keys. |
+| 44 | **[U]** Access Node Proxy | `nodes/proxy` | `create, get` | Use node proxy to reach Kubelet API (10250) through the API server. |
+| 45 | **[U]** Modify ConfigMaps (kube-system) | `configmaps` | `update, patch, delete` | Modify the coredns configmap for DNS poisoning. Modify kube-proxy for traffic manipulation. |
+| 46 | Create/Modify Roles | `roles` | `create, update, patch` | Create a Role with broad permissions, then create a RoleBinding to your SA. |
+| 47 | Create/Modify ClusterRoles | `clusterroles` | `create, update, patch` | Create a ClusterRole with * permissions, then bind it to your SA. |
+| 48 | **[U]** Create StatefulSets | `statefulsets` | `create` | Create a StatefulSet with a privileged pod template. Persistent workload with stable network identity. |
+| 49 | **[U]** Create ReplicaSets | `replicasets` | `create` | Create a ReplicaSet directly. Deploy pods without a Deployment audit trail. |
+| 50 | Read ConfigMaps | `configmaps` | `get, list` | List ConfigMaps. Find kubeconfig templates, connection strings, and API keys stored as config. |
+| 51 | **[U]** Delete ClusterRoleBindings | `clusterrolebindings` | `delete` | Delete security-critical bindings. Disable monitoring SAs, break OPA/Gatekeeper, disrupt RBAC enforcement. |
 
 ## LOW
 
@@ -77,13 +82,13 @@ These permissions enable reconnaissance and disruption.
 
 | # | Pattern | Resource | Verbs | Attack Path |
 |---|---------|----------|-------|-------------|
-| 47 | Read Node Information | `nodes` | `get, list` | List nodes to map cluster topology. Identify node IPs for direct Kubelet API probing. |
-| 48 | **[U]** Patch/Update Nodes | `nodes` | `patch, update` | Taint all nodes except one. Force all new pods to schedule on your compromised node. |
-| 49 | Delete Pods | `pods` | `delete` | Delete a pod so the controller recreates it. Intercept during startup (mount injection, env var capture). |
+| 52 | Read Node Information | `nodes` | `get, list` | List nodes to map cluster topology. Identify node IPs for direct Kubelet API probing. |
+| 53 | **[U]** Patch/Update Nodes | `nodes` | `patch, update` | Taint all nodes except one. Force all new pods to schedule on your compromised node. |
+| 54 | Delete Pods | `pods` | `delete` | Delete a pod so the controller recreates it. Intercept during startup (mount injection, env var capture). |
 
-## Pattern #50
+## Pattern #55
 
-Pattern 50 is a composite: it checks for `selfsubjectaccessreviews`, `selfsubjectrulesreviews`, and `selfsubjectreviews`. These are default grants to all authenticated users and are excluded from findings.
+Pattern 55 is a composite: it checks for `selfsubjectaccessreviews`, `selfsubjectrulesreviews`, and `selfsubjectreviews`. These are default grants to all authenticated users and are excluded from findings.
 
 ## Capabilities
 

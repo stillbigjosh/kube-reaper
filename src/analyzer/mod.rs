@@ -263,6 +263,28 @@ fn analyze_pods(data: &ScanData) -> Vec<PodFinding> {
             attack_parts.push("secrets mounted as env vars -> credential access via exec");
         }
 
+        let plaintext_creds: Vec<String> = pod
+            .env_vars
+            .iter()
+            .filter(|e| {
+                e.from_secret.is_none()
+                    && e.from_configmap.is_none()
+                    && e.value.is_some()
+                    && is_plaintext_credential(&e.name, e.value.as_deref().unwrap_or(""))
+            })
+            .map(|e| e.name.clone())
+            .collect();
+        if !plaintext_creds.is_empty() {
+            issues.push(format!(
+                "plaintext credentials in env: {}",
+                plaintext_creds.join(", ")
+            ));
+            if severity > Severity::High {
+                severity = Severity::High;
+            }
+            attack_parts.push("hardcoded credentials in env vars -> exec into pod to read them");
+        }
+
         if pod.automount_sa_token && !issues.is_empty() {
             issues.push(format!("SA token auto-mounted (SA: {})", pod.service_account));
         }
@@ -602,11 +624,27 @@ fn analyze_secrets(data: &ScanData) -> Vec<SecretFinding> {
                 Severity::High,
                 "Contains SSH private key. Use for lateral movement to nodes or external systems.",
             ),
-            "Opaque" => (
-                "Opaque Secret",
-                Severity::Medium,
-                "Opaque secret. May contain passwords, API keys, connection strings. Decode: kubectl get secret <name> -o jsonpath='{.data}' | base64 -d",
+            "helm.sh/release.v1" => (
+                "Helm Release",
+                Severity::High,
+                "Helm release secret contains the full rendered manifests for this release. Manifests often embed database passwords, API keys, and connection strings that were injected from values.yaml. Decode: kubectl get secret <name> -o jsonpath='{.data.release}' | base64 -d | base64 -d | gunzip",
             ),
+            "Opaque" => {
+                let is_helm = secret.name.starts_with("sh.helm.release.v1.");
+                if is_helm {
+                    (
+                        "Helm Release",
+                        Severity::High,
+                        "Helm release secret (Opaque type) contains full rendered manifests. Manifests often embed database passwords, API keys, and connection strings. Decode: kubectl get secret <name> -o jsonpath='{.data.release}' | base64 -d | base64 -d | gunzip",
+                    )
+                } else {
+                    (
+                        "Opaque Secret",
+                        Severity::Medium,
+                        "Opaque secret. May contain passwords, API keys, connection strings. Decode: kubectl get secret <name> -o jsonpath='{.data}' | base64 -d",
+                    )
+                }
+            }
             _ => continue,
         };
 
@@ -845,6 +883,43 @@ fn is_cni_interface(name: &str) -> bool {
         "dummy", "kube-ipvs", "nodelocaldns", "cilium", "lxc", "wg",
     ];
     cni_prefixes.iter().any(|p| name.starts_with(p))
+}
+
+fn is_plaintext_credential(name: &str, value: &str) -> bool {
+    if value.is_empty() || value.len() < 4 {
+        return false;
+    }
+
+    let lower = name.to_lowercase();
+
+    const EXACT_MATCHES: &[&str] = &[
+        "password", "passwd", "secret", "api_key", "apikey", "api-key",
+        "private_key", "secret_key", "access_key", "auth_token",
+        "database_url", "db_url", "db_password", "db_passwd",
+        "redis_password", "redis_url", "mongo_url", "mongodb_uri",
+        "mysql_password", "postgres_password", "pgpassword",
+        "aws_secret_access_key", "aws_session_token",
+        "azure_client_secret", "azure_tenant_id",
+        "gcp_private_key", "google_credentials",
+        "smtp_password", "mail_password",
+        "jwt_secret", "encryption_key", "signing_key",
+        "connection_string", "dsn",
+    ];
+
+    const SUFFIXES: &[&str] = &[
+        "_password", "_passwd", "_secret", "_token", "_key",
+        "_api_key", "_apikey", "_credentials", "_auth",
+    ];
+
+    if EXACT_MATCHES.iter().any(|m| lower == *m) {
+        return true;
+    }
+
+    if SUFFIXES.iter().any(|s| lower.ends_with(s)) {
+        return true;
+    }
+
+    false
 }
 
 fn permission_matches(

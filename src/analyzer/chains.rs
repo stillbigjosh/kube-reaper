@@ -247,6 +247,8 @@ impl ChainBuilder {
         chains.extend(self.find_pod_pivot_chains());
         chains.extend(self.find_exec_dangerous_pod_chains());
         chains.extend(self.find_sa_spec_pivot_chains());
+        chains.extend(self.find_workload_mutation_chains());
+        chains.extend(self.find_webhook_takeover_chains());
 
         // Deduplicate chains by id (same identity + namespace + chain type)
         let mut seen = std::collections::HashSet::new();
@@ -1203,6 +1205,238 @@ impl ChainBuilder {
                     ),
                 });
             }
+        }
+
+        chains
+    }
+
+    fn find_workload_mutation_chains(&self) -> Vec<AttackChain> {
+        let mut chains = Vec::new();
+
+        let workload_types: &[(&str, &str)] = &[
+            ("deployments", "Deployment"),
+            ("daemonsets", "DaemonSet"),
+            ("statefulsets", "StatefulSet"),
+        ];
+
+        for identity in &self.identities {
+            let patchable: Vec<&str> = workload_types
+                .iter()
+                .filter(|(resource, _)| {
+                    identity.rules.iter().any(|r| {
+                        (r.resource == *resource || r.resource == "*")
+                            && (r.api_group == "apps" || r.api_group == "*")
+                            && (r.verbs.contains(&"patch".to_string())
+                                || r.verbs.contains(&"update".to_string())
+                                || r.verbs.contains(&"*".to_string()))
+                    })
+                })
+                .map(|(_, kind)| *kind)
+                .collect();
+
+            if patchable.is_empty() {
+                continue;
+            }
+
+            let ns_sec = match self
+                .namespace_security
+                .iter()
+                .find(|ns| ns.name == identity.namespace)
+            {
+                Some(ns) => ns,
+                None => continue,
+            };
+
+            let kinds_display = patchable.join("/");
+
+            for sa_name in &ns_sec.service_accounts {
+                let sa_identity = format!(
+                    "system:serviceaccount:{}:{}",
+                    identity.namespace, sa_name
+                );
+
+                if sa_identity == identity.identity {
+                    continue;
+                }
+
+                let sa_profile =
+                    match self.sa_profiles.iter().find(|p| p.identity == sa_identity) {
+                        Some(p) => p,
+                        None => continue,
+                    };
+
+                if sa_profile.dangerous_permissions.is_empty() {
+                    continue;
+                }
+
+                let top_perms: Vec<&str> = sa_profile
+                    .dangerous_permissions
+                    .iter()
+                    .take(3)
+                    .map(|s| s.as_str())
+                    .collect();
+                let perms_display = top_perms.join(", ");
+                let more = if sa_profile.dangerous_permissions.len() > 3 {
+                    format!(" (+{} more)", sa_profile.dangerous_permissions.len() - 3)
+                } else {
+                    String::new()
+                };
+
+                let (final_cap, severity) = if sa_profile.has_wildcard {
+                    (AttackCapability::ClusterAdmin, Severity::Critical)
+                } else if sa_profile.severity == Severity::Critical {
+                    (AttackCapability::PrivilegeEscalation, Severity::Critical)
+                } else {
+                    (AttackCapability::LateralMovement, Severity::High)
+                };
+
+                let extra = if patchable.contains(&"DaemonSet") {
+                    ". DaemonSet variant runs on every node for cluster-wide execution"
+                } else {
+                    ""
+                };
+
+                chains.push(AttackChain {
+                    id: format!(
+                        "workload-mutation-{}-{}-{}",
+                        identity.identity,
+                        identity.namespace,
+                        sa_name
+                    ),
+                    title: format!(
+                        "Identity Theft via Workload Mutation: {} -> {}",
+                        identity.identity, sa_name
+                    ),
+                    severity,
+                    steps: vec![
+                        AttackStep {
+                            identity: identity.identity.clone(),
+                            namespace: identity.namespace.clone(),
+                            action: format!(
+                                "Patch {} spec.template.spec.serviceAccountName to {}",
+                                kinds_display, sa_name
+                            ),
+                            result: format!(
+                                "Next rollout runs pods as {} with attacker-controlled command{}",
+                                sa_identity, extra
+                            ),
+                            capability_gained: AttackCapability::CodeExecution,
+                        },
+                        AttackStep {
+                            identity: identity.identity.clone(),
+                            namespace: identity.namespace.clone(),
+                            action: "Harvest projected SA token from new pods via exec or logs".into(),
+                            result: format!("Token for {} acquired", sa_identity),
+                            capability_gained: AttackCapability::CredentialHarvest,
+                        },
+                        AttackStep {
+                            identity: sa_identity.clone(),
+                            namespace: identity.namespace.clone(),
+                            action: format!(
+                                "Authenticate as {}. SA has: {}{}",
+                                sa_identity, perms_display, more
+                            ),
+                            result: if sa_profile.has_wildcard {
+                                "Wildcard access, cluster-admin equivalent".into()
+                            } else {
+                                format!("Escalated permissions via {}", sa_name)
+                            },
+                            capability_gained: final_cap,
+                        },
+                    ],
+                    final_capability: final_cap,
+                    description: format!(
+                        "{} can patch {} in {}. Change the pod template's serviceAccountName to {} and inject a token-harvesting command. On rollout, new pods run as {} with: {}{}.",
+                        identity.identity, kinds_display, identity.namespace, sa_name, sa_identity, perms_display, more
+                    ),
+                });
+            }
+        }
+
+        chains
+    }
+
+    fn find_webhook_takeover_chains(&self) -> Vec<AttackChain> {
+        let mut chains = Vec::new();
+        let mut seen_identities = std::collections::HashSet::new();
+
+        for identity in &self.identities {
+            if !seen_identities.insert(identity.identity.clone()) {
+                continue;
+            }
+
+            let can_create_webhooks = identity.rules.iter().any(|r| {
+                (r.resource == "mutatingwebhookconfigurations" || r.resource == "*")
+                    && (r.verbs.contains(&"create".to_string())
+                        || r.verbs.contains(&"*".to_string()))
+            });
+
+            if can_create_webhooks {
+                continue;
+            }
+
+            let can_patch_deployments = identity.rules.iter().any(|r| {
+                (r.resource == "deployments" || r.resource == "*")
+                    && (r.api_group == "apps" || r.api_group == "*")
+                    && (r.verbs.contains(&"patch".to_string())
+                        || r.verbs.contains(&"update".to_string())
+                        || r.verbs.contains(&"*".to_string()))
+            });
+
+            if !can_patch_deployments {
+                continue;
+            }
+
+            let can_get_webhooks = identity.rules.iter().any(|r| {
+                (r.resource == "mutatingwebhookconfigurations" || r.resource == "*")
+                    && (r.verbs.contains(&"get".to_string())
+                        || r.verbs.contains(&"list".to_string())
+                        || r.verbs.contains(&"*".to_string()))
+            });
+
+            if !can_get_webhooks {
+                continue;
+            }
+
+            chains.push(AttackChain {
+                id: format!(
+                    "webhook-takeover-{}",
+                    identity.identity
+                ),
+                title: format!(
+                    "Webhook Backend Takeover: {}",
+                    identity.identity
+                ),
+                severity: Severity::High,
+                steps: vec![
+                    AttackStep {
+                        identity: identity.identity.clone(),
+                        namespace: identity.namespace.clone(),
+                        action: "List MutatingWebhookConfigurations to find webhook backend service and namespace".into(),
+                        result: "Webhook backend Deployment identified".into(),
+                        capability_gained: AttackCapability::InformationDisclosure,
+                    },
+                    AttackStep {
+                        identity: identity.identity.clone(),
+                        namespace: identity.namespace.clone(),
+                        action: "Patch the backend Deployment's container image or command to inject attacker-controlled admission logic".into(),
+                        result: "Webhook now runs attacker code. All pods matching the webhook's rules pass through attacker-controlled admission".into(),
+                        capability_gained: AttackCapability::PersistentBackdoor,
+                    },
+                    AttackStep {
+                        identity: identity.identity.clone(),
+                        namespace: "cluster-wide".into(),
+                        action: "Injected webhook mutates every new pod: add sidecar containers, modify env vars, change SA tokens".into(),
+                        result: "Cluster-wide persistent backdoor through admission control".into(),
+                        capability_gained: AttackCapability::PersistentBackdoor,
+                    },
+                ],
+                final_capability: AttackCapability::PersistentBackdoor,
+                description: format!(
+                    "{} can list MutatingWebhookConfigurations and patch Deployments but cannot create new webhooks. If MutatingWebhookConfigurations exist, patch the Deployment that serves the webhook backend. Stealthier than creating a new webhook because no new admission registration appears.",
+                    identity.identity
+                ),
+            });
         }
 
         chains

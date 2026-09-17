@@ -1,6 +1,6 @@
 # Attack Path Chains
 
-kube-reaper builds 16 types of multi-step attack chains. Each chain links permissions, running pods, and cluster state into a step-by-step escalation path.
+kube-reaper builds 18 types of multi-step attack chains. Each chain links permissions, running pods, and cluster state into a step-by-step escalation path.
 
 Chains are deduplicated by ID. The same chain type for the same identity is shown once, not once per namespace (except where namespace matters, such as privileged pod breakout and PSS removal).
 
@@ -212,6 +212,38 @@ Steps:
 4. Authenticate as the target SA
 
 This chain does not require `get secrets` or `create serviceaccounts/token`. It only needs `create pods`. The projected token is mounted by the API server as part of normal pod creation. The chain cross-references pod creation permissions with the RBAC graph to find SAs worth targeting.
+
+### 17. Workload Mutation Identity Theft
+
+**Severity:** HIGH or CRITICAL (depends on target SA)
+**Requires:** `patch` or `update` on `deployments`, `daemonsets`, or `statefulsets` + target SA with dangerous permissions in the same namespace
+**Final capability:** Lateral Movement, Privilege Escalation, or Cluster Admin Takeover
+
+Steps:
+1. Patch the workload's `serviceAccountName` to a target SA with dangerous permissions
+2. Wait for rollout. New pods mount a projected token for the target SA
+3. Read the token from `/var/run/secrets/kubernetes.io/serviceaccount/token`
+4. Authenticate as the target SA
+
+This chain differs from SA Spec Identity Pivot (chain type 16) because it does not require `create pods`. It hijacks existing workloads instead. DaemonSet mutations run on every node, giving cluster-wide code execution. StatefulSet mutations persist across restarts because of stable storage. The chain cross-references patch/update permissions with the RBAC graph to find SAs worth targeting.
+
+One chain is emitted per (identity, namespace, target SA) combination. The chain lists all patchable workload types the identity has access to (Deployment, DaemonSet, StatefulSet) in a single finding to reduce noise.
+
+### 18. Webhook Backend Takeover
+
+**Severity:** HIGH
+**Requires:** `list` on `mutatingwebhookconfigurations` + `patch` or `update` on `deployments`
+**Final capability:** Persistent Backdoor
+
+Steps:
+1. List MutatingWebhookConfigurations to find which Service backends serve admission webhooks
+2. Identify the Deployment behind the webhook backend Service
+3. Patch the backend Deployment to inject attacker code into the webhook handler
+4. All future pod creates and updates pass through the compromised admission webhook
+
+This chain differs from Webhook Backdoor (chain type 9) because it does not require `create mutatingwebhookconfigurations`. Instead of registering a new webhook, it takes over the Deployment that serves an existing webhook's backend. This is stealthier because no new webhook appears in the API server.
+
+This chain is suppressed when the identity can create MutatingWebhookConfigurations directly, since the Webhook Backdoor path (chain type 9) is simpler. The chain requires existing MutatingWebhookConfigurations in the cluster to be actionable.
 
 ## Chain Deduplication
 
